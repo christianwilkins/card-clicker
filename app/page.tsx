@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Card, { type CardType, type Suit, type Rank } from '@/components/Card';
+import RecentCardItem, { type RecentCardStatus } from '@/components/RecentCardItem';
 
 interface FloatingScore {
   id: string;
@@ -18,6 +19,12 @@ interface Upgrade {
   cost: number;
   value?: number;
   card?: CardType;
+}
+
+interface RecentCardEntry {
+  id: string;
+  card: CardType;
+  status: RecentCardStatus;
 }
 
 function createDeck(): CardType[] {
@@ -93,13 +100,17 @@ function generateUpgrades(): Upgrade[] {
 export default function Home() {
   const [deck, setDeck] = useState<CardType[]>(createDeck());
   const [score, setScore] = useState(0);
-  const [cardQueue, setCardQueue] = useState<CardType[]>([]);
+  const [recentCards, setRecentCards] = useState<RecentCardEntry[]>([]);
   const [sameSuitMult, setSameSuitMult] = useState(1);
   const [sameRankMult, setSameRankMult] = useState(1);
   const [upgrades, setUpgrades] = useState<Upgrade[]>([]);
   const [replacingCard, setReplacingCard] = useState<CardType | null>(null);
   const [floatingScores, setFloatingScores] = useState<FloatingScore[]>([]);
   const [lastScoreAdded, setLastScoreAdded] = useState<number>(0);
+
+  const activeRecentCards = recentCards.filter(entry => entry.status !== 'exit');
+  const exitingRecentCards = recentCards.filter(entry => entry.status === 'exit');
+  const displayedRecentCards = [...activeRecentCards, ...exitingRecentCards];
 
   useEffect(() => {
     setDeck(shuffleDeck(createDeck()));
@@ -117,7 +128,7 @@ export default function Home() {
 
     let cardScore = getRankValue(drawnCard.rank);
 
-    const lastCard = cardQueue[cardQueue.length - 1];
+    const lastCard = recentCards.find(entry => entry.status !== 'exit')?.card;
     if (lastCard) {
       if (lastCard.suit === drawnCard.suit) {
         cardScore *= sameSuitMult;
@@ -142,10 +153,41 @@ export default function Home() {
     setScore(score + finalScore);
     setLastScoreAdded(finalScore);
 
-    setCardQueue(prev => {
-      const newQueue = [...prev, drawnCard];
-      return newQueue.slice(-5);
+    setRecentCards(prev => {
+      const normalized = prev.map(entry =>
+        entry.status === 'enter'
+          ? { ...entry, status: 'idle' as RecentCardStatus }
+          : entry
+      );
+
+      const activeEntries = normalized.filter(entry => entry.status !== 'exit');
+      const exitEntries = normalized.filter(entry => entry.status === 'exit');
+
+      const newEntry: RecentCardEntry = {
+        id: `${drawnCard.id}-${Date.now()}`,
+        card: drawnCard,
+        status: 'enter'
+      };
+
+      const nextActive = [newEntry, ...activeEntries];
+
+      const keptActive: RecentCardEntry[] = [];
+      const overflowActive: RecentCardEntry[] = [];
+
+      nextActive.forEach((entry, index) => {
+        if (index < 5) {
+          keptActive.push(entry);
+        } else {
+          overflowActive.push({ ...entry, status: 'exit' as RecentCardStatus });
+        }
+      });
+
+      return [...keptActive, ...overflowActive, ...exitEntries];
     });
+  };
+
+  const handleRecentCardExitComplete = (entryId: string) => {
+    setRecentCards(prev => prev.filter(entry => entry.id !== entryId));
   };
 
   const buyUpgrade = (upgrade: Upgrade) => {
@@ -219,7 +261,7 @@ export default function Home() {
   const resetGame = () => {
     setDeck(shuffleDeck(createDeck()));
     setScore(0);
-    setCardQueue([]);
+    setRecentCards([]);
     setSameSuitMult(1);
     setSameRankMult(1);
     setUpgrades(generateUpgrades());
@@ -307,24 +349,29 @@ export default function Home() {
           </div>
 
           {/* Recent Cards */}
-          {cardQueue.length > 0 && (
+          {displayedRecentCards.length > 0 && (
             <div>
               <div className="text-xs uppercase tracking-wider text-gray-500 mb-3">Recent Cards</div>
               <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
-                {cardQueue.map((card, index) => (
-                  <div
-                    key={`${card.id}-${index}`}
-                    className="flex-shrink-0 transition-opacity"
-                    style={{
-                      opacity: 0.4 + (index / cardQueue.length) * 0.6,
-                      animation: `slideIn 0.3s ease-out ${index * 0.05}s both`
-                    }}
-                  >
-                    <div className="scale-90">
-                      <Card suit={card.suit} rank={card.rank} />
-                    </div>
-                  </div>
-                ))}
+                {displayedRecentCards.map((entry) => {
+                  const activeIndex = activeRecentCards.findIndex(item => item.id === entry.id);
+                  const activeCount = activeRecentCards.length;
+                  const opacity = activeIndex === -1
+                    ? 0.4
+                    : activeCount === 1
+                      ? 1
+                      : 0.4 + ((activeCount - activeIndex - 1) / (activeCount - 1)) * 0.6;
+
+                  return (
+                    <RecentCardItem
+                      key={entry.id}
+                      card={entry.card}
+                      status={entry.status}
+                      opacity={opacity}
+                      onExitComplete={entry.status === 'exit' ? () => handleRecentCardExitComplete(entry.id) : undefined}
+                    />
+                  );
+                })}
               </div>
             </div>
           )}
@@ -425,15 +472,40 @@ export default function Home() {
           }
         }
 
-        @keyframes slideIn {
-          from {
+        @keyframes recentCardEnter {
+          0% {
             opacity: 0;
-            transform: translateX(-10px);
+            transform: translateX(-24px) scale(0.96);
           }
-          to {
+          100% {
             opacity: 1;
-            transform: translateX(0);
+            transform: translateX(0) scale(1);
           }
+        }
+
+        @keyframes recentCardExit {
+          0% {
+            opacity: 1;
+            transform: translateX(0) scale(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translateX(32px) scale(0.9);
+          }
+        }
+
+        :global(.recent-card-item) {
+          transition: transform 0.25s ease, opacity 0.3s ease;
+          will-change: transform, opacity;
+        }
+
+        :global(.recent-card-item[data-status='enter']) {
+          animation: recentCardEnter 0.35s ease-out;
+        }
+
+        :global(.recent-card-item[data-status='exit']) {
+          animation: recentCardExit 0.3s ease-in forwards;
+          pointer-events: none;
         }
 
         .scrollbar-hide::-webkit-scrollbar {
