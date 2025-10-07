@@ -1,30 +1,13 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import Card, { type CardType, type Suit, type Rank } from '@/components/Card';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import Card, { type CardType, type Rank, type Suit } from '@/components/Card';
 import RecentCardItem, { type RecentCardStatus } from '@/components/RecentCardItem';
 
 interface FloatingScore {
   id: string;
   value: number;
-}
-
-const suits: Suit[] = ['♠', '♥', '♦', '♣'];
-const ranks: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-
-interface Upgrade {
-  id: string;
-  type: 'sameSuitMult' | 'sameRankMult' | 'card';
-  name: string;
-  cost: number;
-  value?: number;
-  card?: CardType;
-}
-
-interface RecentCardEntry {
-  id: string;
-  card: CardType;
-  status: RecentCardStatus;
+  hit: boolean;
 }
 
 interface DrawAnimation {
@@ -32,16 +15,44 @@ interface DrawAnimation {
   card: CardType;
 }
 
-interface StoredGameState {
-  deck: CardType[];
-  score: number;
-  recentCards: RecentCardEntry[];
-  sameSuitMult: number;
-  sameRankMult: number;
-  upgrades: Upgrade[];
+type RoundOutcome = 'active' | 'won' | 'lost';
+
+interface RecentCardEntry {
+  id: string;
+  card: CardType;
+  status: RecentCardStatus;
+  betId: string | null;
+  betHit: boolean;
+  gain: number;
 }
 
-const STORAGE_KEY = 'card-clicker-progress-v1';
+interface StoredGameState {
+  deck: CardType[];
+  bank: number;
+  roundNumber: number;
+  roundScore: number;
+  roundTarget: number;
+  drawsRemaining: number;
+  roundOutcome: RoundOutcome;
+  selectedBetId: string | null;
+  recentCards: RecentCardEntry[];
+}
+
+const suits: Suit[] = ['♠', '♥', '♦', '♣'];
+const ranks: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+
+const STORAGE_KEY = 'card-clicker-risk-v1';
+const MAX_DRAWS = 4;
+
+interface BetOption {
+  id: string;
+  category: 'Color' | 'Suit' | 'Rank Type' | 'Value' | 'Special';
+  label: string;
+  description: string;
+  multiplier: number;
+  risk: 'low' | 'medium' | 'high' | 'extreme';
+  check: (card: CardType) => boolean;
+}
 
 function createJokerCard(color: 'red' | 'black', id?: string): CardType {
   return {
@@ -95,119 +106,164 @@ function shuffleDeck(deck: CardType[]): CardType[] {
 }
 
 function getRankValue(rank: Rank): number {
-  if (rank === 'Joker') return 15;
   if (rank === 'A') return 11;
-  if (rank === 'J') return 11;
-  if (rank === 'Q') return 12;
-  if (rank === 'K') return 13;
+  if (rank === 'J') return 12;
+  if (rank === 'Q') return 13;
+  if (rank === 'K') return 14;
   return parseInt(rank);
 }
 
-function generateRandomCard(): CardType {
-  if (Math.random() < 0.05) {
-    return createJokerCard(Math.random() > 0.5 ? 'red' : 'black');
+const betOptions: BetOption[] = [
+  {
+    id: 'color-red',
+    category: 'Color',
+    label: 'Red Cards',
+    description: 'Hearts or Diamonds',
+    multiplier: 1.7,
+    risk: 'low',
+    check: (card) => card.suit === '♥' || card.suit === '♦'
+  },
+  {
+    id: 'color-black',
+    category: 'Color',
+    label: 'Black Cards',
+    description: 'Spades or Clubs',
+    multiplier: 1.7,
+    risk: 'low',
+    check: (card) => card.suit === '♠' || card.suit === '♣'
+  },
+  {
+    id: 'suit-spades',
+    category: 'Suit',
+    label: 'Exact Suit: ♠',
+    description: 'Bet on spades specifically',
+    multiplier: 3.2,
+    risk: 'high',
+    check: (card) => card.suit === '♠'
+  },
+  {
+    id: 'suit-hearts',
+    category: 'Suit',
+    label: 'Exact Suit: ♥',
+    description: 'Bet on hearts specifically',
+    multiplier: 3.0,
+    risk: 'high',
+    check: (card) => card.suit === '♥'
+  },
+  {
+    id: 'suit-diamonds',
+    category: 'Suit',
+    label: 'Exact Suit: ♦',
+    description: 'Bet on diamonds specifically',
+    multiplier: 3.0,
+    risk: 'high',
+    check: (card) => card.suit === '♦'
+  },
+  {
+    id: 'suit-clubs',
+    category: 'Suit',
+    label: 'Exact Suit: ♣',
+    description: 'Bet on clubs specifically',
+    multiplier: 3.2,
+    risk: 'high',
+    check: (card) => card.suit === '♣'
+  },
+  {
+    id: 'rank-face',
+    category: 'Rank Type',
+    label: 'Face Card',
+    description: 'J, Q, or K',
+    multiplier: 2.2,
+    risk: 'medium',
+    check: (card) => card.rank === 'J' || card.rank === 'Q' || card.rank === 'K'
+  },
+  {
+    id: 'rank-number',
+    category: 'Rank Type',
+    label: 'Number Card',
+    description: 'Ranks 2 through 10',
+    multiplier: 1.5,
+    risk: 'low',
+    check: (card) => ['A', 'J', 'Q', 'K', 'Joker'].includes(card.rank) === false
+  },
+  {
+    id: 'value-high',
+    category: 'Value',
+    label: 'High (9+)',
+    description: 'Rank 9 or above',
+    multiplier: 1.9,
+    risk: 'medium',
+    check: (card) => {
+      if (card.rank === 'Joker') return true;
+      const value = getRankValue(card.rank);
+      return value >= 9;
+    }
+  },
+  {
+    id: 'value-low',
+    category: 'Value',
+    label: 'Low (2-6)',
+    description: 'Rank 2 through 6',
+    multiplier: 2.1,
+    risk: 'medium',
+    check: (card) => {
+      if (card.rank === 'Joker') return false;
+      const value = getRankValue(card.rank);
+      return value >= 2 && value <= 6;
+    }
+  },
+  {
+    id: 'special-ace',
+    category: 'Special',
+    label: 'Ace',
+    description: 'Land exactly on an Ace',
+    multiplier: 4.5,
+    risk: 'high',
+    check: (card) => card.rank === 'A'
+  },
+  {
+    id: 'special-joker',
+    category: 'Special',
+    label: 'Joker',
+    description: 'Hit either Joker',
+    multiplier: 7.0,
+    risk: 'extreme',
+    check: (card) => card.rank === 'Joker'
   }
-  const suit = suits[Math.floor(Math.random() * suits.length)];
-  const rank = ranks[Math.floor(Math.random() * ranks.length)];
-  return { suit, rank, id: `${rank}${suit}-${Date.now()}` };
-}
+];
 
-function generateUpgrades(): Upgrade[] {
-  const upgrades: Upgrade[] = [];
+const betOptionMap = new Map(betOptions.map((option) => [option.id, option]));
 
-  upgrades.push({
-    id: 'suit-mult-1',
-    type: 'sameSuitMult',
-    name: 'Same Suit Multiplier',
-    cost: 50,
-    value: 0.5
-  });
-
-  upgrades.push({
-    id: 'rank-mult-1',
-    type: 'sameRankMult',
-    name: 'Same Rank Multiplier',
-    cost: 50,
-    value: 0.5
-  });
-
-  for (let i = 0; i < 4; i++) {
-    const card = generateRandomCard();
-    upgrades.push({
-      id: `card-${i}`,
-      type: 'card',
-      name: `${card.rank}${card.suit}`,
-      cost: 100,
-      card
-    });
-  }
-
-  return upgrades;
+function calculateRoundTarget(roundNumber: number): number {
+  return Math.floor(44 + (roundNumber - 1) * 7);
 }
 
 export default function Home() {
-  const [deck, setDeck] = useState<CardType[]>(createDeck());
-  const [score, setScore] = useState(0);
+  const [deck, setDeck] = useState<CardType[]>(() => shuffleDeck(createDeck()));
+  const deckRef = useRef<CardType[]>(deck);
+  const [bank, setBank] = useState(0);
+  const [roundNumber, setRoundNumber] = useState(1);
+  const [roundScore, setRoundScore] = useState(0);
+  const [roundTarget, setRoundTarget] = useState(calculateRoundTarget(1));
+  const [drawsRemaining, setDrawsRemaining] = useState(MAX_DRAWS);
+  const [roundOutcome, setRoundOutcome] = useState<RoundOutcome>('active');
   const [recentCards, setRecentCards] = useState<RecentCardEntry[]>([]);
-  const [sameSuitMult, setSameSuitMult] = useState(1);
-  const [sameRankMult, setSameRankMult] = useState(1);
-  const [upgrades, setUpgrades] = useState<Upgrade[]>([]);
-  const [replacingCard, setReplacingCard] = useState<CardType | null>(null);
   const [floatingScores, setFloatingScores] = useState<FloatingScore[]>([]);
-  const [lastScoreAdded, setLastScoreAdded] = useState<number>(0);
   const [drawAnimations, setDrawAnimations] = useState<DrawAnimation[]>([]);
+  const [lastDrawScore, setLastDrawScore] = useState(0);
+  const [selectedBetId, setSelectedBetId] = useState<string | null>(null);
+  const [betFeedback, setBetFeedback] = useState<string | null>(null);
   const [readyToPersist, setReadyToPersist] = useState(false);
   const hasLoadedRef = useRef(false);
-  const deckRef = useRef<CardType[]>(deck);
 
-  const activeRecentCards = recentCards.filter(entry => entry.status !== 'exit');
-  const exitingRecentCards = recentCards.filter(entry => entry.status === 'exit');
+  const selectedBet = useMemo(
+    () => (selectedBetId ? betOptionMap.get(selectedBetId) ?? null : null),
+    [selectedBetId]
+  );
+
+  const activeRecentCards = recentCards.filter((entry) => entry.status !== 'exit');
+  const exitingRecentCards = recentCards.filter((entry) => entry.status === 'exit');
   const displayedRecentCards = [...activeRecentCards, ...exitingRecentCards];
-
-  const previousScore = Math.max(score - lastScoreAdded, 0);
-  const ratioDenominator = previousScore > 0 ? previousScore : Math.max(lastScoreAdded, 1);
-  const gainRatio = lastScoreAdded > 0 ? lastScoreAdded / ratioDenominator : 0;
-  let scoreCardClass =
-    'rounded-xl px-6 py-5 bg-gray-900/50 border border-gray-800 shadow-[0_10px_30px_rgba(15,23,42,0.25)] transition-all duration-200';
-  let totalScoreClass = 'text-slate-100';
-  let gainScoreClass = lastScoreAdded > 0 ? 'text-sky-400' : 'text-gray-500';
-  let ratioTagClass = lastScoreAdded > 0 ? 'text-sky-300/80' : 'text-gray-600';
-  let ratioLabel = '';
-
-  if (lastScoreAdded > 0) {
-    const ratioPercentRaw = gainRatio * 100;
-    const roundedPercent = Math.round(Math.min(ratioPercentRaw, 999));
-    if (ratioPercentRaw >= 100) {
-      ratioLabel = '100%+ of progress';
-    } else if (roundedPercent <= 0 && ratioPercentRaw > 0) {
-      ratioLabel = '<1% of progress';
-    } else {
-      ratioLabel = `${roundedPercent}% of progress`;
-    }
-
-    if (gainRatio >= 0.75) {
-      scoreCardClass =
-        'rounded-xl px-6 py-5 bg-gradient-to-br from-amber-500/20 via-gray-900/55 to-gray-950 border border-amber-400/50 shadow-[0_18px_45px_rgba(251,191,36,0.25)] transition-all duration-200';
-      totalScoreClass = 'text-amber-200';
-      gainScoreClass = 'text-amber-300';
-      ratioTagClass = 'text-amber-200/80';
-    } else if (gainRatio >= 0.4) {
-      scoreCardClass =
-        'rounded-xl px-6 py-5 bg-gradient-to-br from-emerald-500/18 via-gray-900/55 to-gray-950 border border-emerald-400/40 shadow-[0_16px_40px_rgba(16,185,129,0.22)] transition-all duration-200';
-      totalScoreClass = 'text-emerald-200';
-      gainScoreClass = 'text-emerald-300';
-      ratioTagClass = 'text-emerald-200/80';
-    } else if (gainRatio >= 0.18) {
-      scoreCardClass =
-        'rounded-xl px-6 py-5 bg-gradient-to-br from-sky-500/15 via-gray-900/55 to-gray-950 border border-sky-400/30 shadow-[0_14px_35px_rgba(56,189,248,0.2)] transition-all duration-200';
-      totalScoreClass = 'text-sky-200';
-      gainScoreClass = 'text-sky-300';
-      ratioTagClass = 'text-sky-200/80';
-    } else {
-      gainScoreClass = 'text-sky-400';
-      ratioTagClass = 'text-sky-300/80';
-    }
-  }
 
   useEffect(() => {
     deckRef.current = deck;
@@ -232,29 +288,40 @@ export default function Home() {
           setDeck(freshDeck);
         }
 
-        setScore(typeof parsed.score === 'number' && !Number.isNaN(parsed.score) ? parsed.score : 0);
-        setSameSuitMult(
-          typeof parsed.sameSuitMult === 'number' && parsed.sameSuitMult > 0 ? parsed.sameSuitMult : 1
+        setBank(typeof parsed.bank === 'number' && !Number.isNaN(parsed.bank) ? parsed.bank : 0);
+
+        const storedRound = typeof parsed.roundNumber === 'number' && parsed.roundNumber > 0
+          ? Math.floor(parsed.roundNumber)
+          : 1;
+        setRoundNumber(storedRound);
+
+        setRoundScore(
+          typeof parsed.roundScore === 'number' && parsed.roundScore >= 0 ? parsed.roundScore : 0
         );
-        setSameRankMult(
-          typeof parsed.sameRankMult === 'number' && parsed.sameRankMult > 0 ? parsed.sameRankMult : 1
-        );
-        if (parsed.upgrades && Array.isArray(parsed.upgrades) && parsed.upgrades.length > 0) {
-          const hydratedUpgrades = parsed.upgrades.map((item) =>
-            item.type === 'card' && item.card
-              ? {
-                  ...item,
-                  card: normalizeStoredCard(item.card)
-                }
-              : item
-          );
-          setUpgrades(hydratedUpgrades);
+
+        if (typeof parsed.roundTarget === 'number' && parsed.roundTarget > 0) {
+          setRoundTarget(parsed.roundTarget);
         } else {
-          setUpgrades(generateUpgrades());
+          setRoundTarget(calculateRoundTarget(storedRound));
         }
+
+        setDrawsRemaining(
+          typeof parsed.drawsRemaining === 'number' && parsed.drawsRemaining >= 0 && parsed.drawsRemaining <= MAX_DRAWS
+            ? parsed.drawsRemaining
+            : MAX_DRAWS
+        );
+
+        setRoundOutcome(
+          parsed.roundOutcome === 'won' || parsed.roundOutcome === 'lost' ? parsed.roundOutcome : 'active'
+        );
+
+        if (parsed.selectedBetId && betOptionMap.has(parsed.selectedBetId)) {
+          setSelectedBetId(parsed.selectedBetId);
+        }
+
         if (parsed.recentCards && Array.isArray(parsed.recentCards)) {
           setRecentCards(
-            parsed.recentCards.map(entry => ({
+            parsed.recentCards.map((entry) => ({
               ...entry,
               card: normalizeStoredCard(entry.card),
               status: 'idle' as RecentCardStatus
@@ -267,115 +334,170 @@ export default function Home() {
         const freshDeck = shuffleDeck(createDeck());
         deckRef.current = freshDeck;
         setDeck(freshDeck);
-        setUpgrades(generateUpgrades());
       }
     } catch (error) {
       console.warn('Failed to load stored game state, resetting progress.', error);
       const freshDeck = shuffleDeck(createDeck());
       deckRef.current = freshDeck;
       setDeck(freshDeck);
-      setUpgrades(generateUpgrades());
-      setScore(0);
-      setSameSuitMult(1);
-      setSameRankMult(1);
+      setBank(0);
+      setRoundNumber(1);
+      setRoundScore(0);
+      setRoundTarget(calculateRoundTarget(1));
+      setDrawsRemaining(MAX_DRAWS);
+      setRoundOutcome('active');
+      setSelectedBetId(null);
       setRecentCards([]);
     } finally {
       hasLoadedRef.current = true;
       setReadyToPersist(true);
     }
-  }, [hasLoadedRef]);
+  }, []);
 
   useEffect(() => {
     if (!readyToPersist || typeof window === 'undefined') return;
 
-    const sanitizedRecentCards = recentCards.map(entry => ({
+    const sanitizedRecentCards = recentCards.map((entry) => ({
       ...entry,
       status: 'idle' as RecentCardStatus
     }));
 
-    const stateToStore: StoredGameState = {
+    const payload: StoredGameState = {
       deck,
-      score,
-      recentCards: sanitizedRecentCards,
-      sameSuitMult,
-      sameRankMult,
-      upgrades
+      bank,
+      roundNumber,
+      roundScore,
+      roundTarget,
+      drawsRemaining,
+      roundOutcome,
+      selectedBetId,
+      recentCards: sanitizedRecentCards
     };
 
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(stateToStore));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch (error) {
       console.warn('Failed to persist game state to localStorage.', error);
     }
-  }, [deck, score, recentCards, sameSuitMult, sameRankMult, upgrades, readyToPersist]);
+  }, [
+    deck,
+    bank,
+    roundNumber,
+    roundScore,
+    roundTarget,
+    drawsRemaining,
+    roundOutcome,
+    selectedBetId,
+    recentCards,
+    readyToPersist
+  ]);
+
+  const gainRatio = roundTarget > 0 ? lastDrawScore / roundTarget : 0;
+  let scoreCardClass =
+    'rounded-xl px-6 py-5 bg-gray-900/50 border border-gray-800 shadow-[0_10px_30px_rgba(15,23,42,0.25)] transition-all duration-200';
+  let totalScoreClass = 'text-slate-100';
+  let gainScoreClass = lastDrawScore > 0 ? 'text-sky-400' : 'text-rose-400';
+  let ratioTagClass = lastDrawScore > 0 ? 'text-sky-300/80' : 'text-rose-400/80';
+  const ratioLabel = lastDrawScore > 0
+    ? `${Math.min(Math.round(gainRatio * 100), 999)}% of round target`
+    : 'Missed bet';
+
+  if (lastDrawScore === 0) {
+    scoreCardClass =
+      'rounded-xl px-6 py-5 bg-gradient-to-br from-rose-500/15 via-gray-900/55 to-gray-950 border border-rose-400/40 shadow-[0_16px_40px_rgba(244,63,94,0.2)] transition-all duration-200';
+    totalScoreClass = 'text-rose-100';
+  } else if (gainRatio >= 0.5) {
+    scoreCardClass =
+      'rounded-xl px-6 py-5 bg-gradient-to-br from-amber-500/20 via-gray-900/55 to-gray-950 border border-amber-400/50 shadow-[0_18px_45px_rgba(251,191,36,0.25)] transition-all duration-200';
+    totalScoreClass = 'text-amber-200';
+    gainScoreClass = 'text-amber-300';
+    ratioTagClass = 'text-amber-200/80';
+  } else if (gainRatio >= 0.3) {
+    scoreCardClass =
+      'rounded-xl px-6 py-5 bg-gradient-to-br from-emerald-500/18 via-gray-900/55 to-gray-950 border border-emerald-400/40 shadow-[0_16px_40px_rgba(16,185,129,0.22)] transition-all duration-200';
+    totalScoreClass = 'text-emerald-200';
+    gainScoreClass = 'text-emerald-300';
+    ratioTagClass = 'text-emerald-200/80';
+  } else if (gainRatio > 0) {
+    scoreCardClass =
+      'rounded-xl px-6 py-5 bg-gradient-to-br from-sky-500/15 via-gray-900/55 to-gray-950 border border-sky-400/30 shadow-[0_14px_35px_rgba(56,189,248,0.2)] transition-all duration-200';
+    totalScoreClass = 'text-sky-200';
+    gainScoreClass = 'text-sky-300';
+    ratioTagClass = 'text-sky-200/80';
+  }
+
+  const betsByCategory = useMemo(() => {
+    return betOptions.reduce((acc, option) => {
+      if (!acc[option.category]) {
+        acc[option.category] = [];
+      }
+      acc[option.category].push(option);
+      return acc;
+    }, {} as Record<string, BetOption[]>);
+  }, []);
+
+  const roundProgress = roundTarget > 0 ? Math.min(roundScore / roundTarget, 1) : 0;
 
   const drawCard = () => {
-    let deckToUse = deckRef.current;
-
-    if (!deckToUse) {
-      deckToUse = createDeck();
+    if (roundOutcome !== 'active') return;
+    if (!selectedBet) {
+      setBetFeedback('Select a bet before drawing a card.');
+      return;
     }
 
-    if (deckToUse.length === 0) {
+    let deckToUse = deckRef.current;
+    if (!deckToUse || deckToUse.length === 0) {
       deckToUse = shuffleDeck(createDeck());
     }
 
-    if (deckToUse.length === 0) {
-      return;
-    }
-
     const [drawnCard, ...remainingDeck] = deckToUse;
-    if (!drawnCard) {
-      return;
-    }
+    if (!drawnCard) return;
 
     deckRef.current = remainingDeck;
     setDeck(remainingDeck);
 
-    let cardScore = getRankValue(drawnCard.rank);
-
-    const lastCard = recentCards.find(entry => entry.status !== 'exit')?.card;
-    if (lastCard) {
-      if (lastCard.suit === drawnCard.suit) {
-        cardScore *= sameSuitMult;
-      }
-      if (lastCard.rank === drawnCard.rank) {
-        cardScore *= sameRankMult;
-      }
-    }
-
-    const finalScore = Math.floor(cardScore);
+    const baseScore =
+      drawnCard.rank === 'Joker' ? 20 : Math.max(getRankValue(drawnCard.rank), 2);
+    const betHit = selectedBet.check(drawnCard);
+    const drawScore = betHit
+      ? Math.floor(baseScore * selectedBet.multiplier)
+      : Math.floor(baseScore * 0.35);
 
     const floatingScore: FloatingScore = {
       id: `score-${Date.now()}`,
-      value: finalScore
+      value: drawScore,
+      hit: betHit
     };
-    setFloatingScores(prev => [...prev, floatingScore]);
-
+    setFloatingScores((prev) => [...prev, floatingScore]);
     setTimeout(() => {
-      setFloatingScores(prev => prev.filter(s => s.id !== floatingScore.id));
+      setFloatingScores((prev) => prev.filter((entry) => entry.id !== floatingScore.id));
     }, 2000);
 
-    setScore(prev => prev + finalScore);
-    setLastScoreAdded(finalScore);
+    const newRoundScore = roundScore + drawScore;
+    const newDrawsRemaining = drawsRemaining - 1;
 
-    const cardForQueue = drawnCard;
+    setRoundScore(newRoundScore);
+    setDrawsRemaining(newDrawsRemaining);
+    setLastDrawScore(drawScore);
 
-    setRecentCards(prev => {
-      const normalized = prev.map(entry =>
+    const newEntry: RecentCardEntry = {
+      id: `${drawnCard.id}-${Date.now()}`,
+      card: drawnCard,
+      status: 'enter',
+      betId: selectedBet.id,
+      betHit,
+      gain: drawScore
+    };
+
+    setRecentCards((prev) => {
+      const normalized = prev.map((entry) =>
         entry.status === 'enter'
           ? { ...entry, status: 'idle' as RecentCardStatus }
           : entry
       );
 
-      const activeEntries = normalized.filter(entry => entry.status !== 'exit');
-      const exitEntries = normalized.filter(entry => entry.status === 'exit');
-
-      const newEntry: RecentCardEntry = {
-        id: `${cardForQueue.id}-${Date.now()}`,
-        card: cardForQueue,
-        status: 'enter'
-      };
+      const activeEntries = normalized.filter((entry) => entry.status !== 'exit');
+      const exitEntries = normalized.filter((entry) => entry.status === 'exit');
 
       const nextActive = [newEntry, ...activeEntries];
 
@@ -383,7 +505,7 @@ export default function Home() {
       const overflowActive: RecentCardEntry[] = [];
 
       nextActive.forEach((entry, index) => {
-        if (index < 5) {
+        if (index < 6) {
           keptActive.push(entry);
         } else {
           overflowActive.push({ ...entry, status: 'exit' as RecentCardStatus });
@@ -394,136 +516,67 @@ export default function Home() {
     });
 
     const animationId = `draw-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    setDrawAnimations(prev => [...prev, { id: animationId, card: cardForQueue }]);
-  };
+    setDrawAnimations((prev) => [...prev, { id: animationId, card: drawnCard }]);
 
-  const handleRecentCardExitComplete = (entryId: string) => {
-    setRecentCards(prev => prev.filter(entry => entry.id !== entryId));
-  };
-
-  const handleDrawAnimationEnd = (animationId: string) => {
-    setDrawAnimations(prev => prev.filter(animation => animation.id !== animationId));
-  };
-
-  const applyFreshState = () => {
-    const refreshedDeck = shuffleDeck(createDeck());
-    deckRef.current = refreshedDeck;
-    setDeck(refreshedDeck);
-    setScore(0);
-    setRecentCards([]);
-    setSameSuitMult(1);
-    setSameRankMult(1);
-    setUpgrades(generateUpgrades());
-    setReplacingCard(null);
-    setFloatingScores([]);
-    setLastScoreAdded(0);
-    setDrawAnimations([]);
-  };
-
-  const buyUpgrade = (upgrade: Upgrade) => {
-    if (score < upgrade.cost) return;
-
-    setScore(prev => prev - upgrade.cost);
-
-    if (upgrade.type === 'sameSuitMult') {
-      const increment = upgrade.value ?? 0.5;
-      const nextCost = Math.max(upgrade.cost + 10, Math.floor(upgrade.cost * 1.5));
-
-      setSameSuitMult(prev => prev + increment);
-      setUpgrades(prev =>
-        prev.map(u =>
-          u.id === upgrade.id
-            ? {
-                id: `suit-mult-${Date.now()}`,
-                type: 'sameSuitMult',
-                name: 'Same Suit Multiplier',
-                cost: nextCost,
-                value: increment
-              }
-            : u
-        )
-      );
-    } else if (upgrade.type === 'sameRankMult') {
-      const increment = upgrade.value ?? 0.5;
-      const nextCost = Math.max(upgrade.cost + 10, Math.floor(upgrade.cost * 1.5));
-
-      setSameRankMult(prev => prev + increment);
-      setUpgrades(prev =>
-        prev.map(u =>
-          u.id === upgrade.id
-            ? {
-                id: `rank-mult-${Date.now()}`,
-                type: 'sameRankMult',
-                name: 'Same Rank Multiplier',
-                cost: nextCost,
-                value: increment
-              }
-            : u
-        )
-      );
-    } else if (upgrade.type === 'card' && upgrade.card) {
-      if (deckRef.current.length >= 54) {
-        setReplacingCard(upgrade.card);
-        return;
-      }
-
-      setDeck(prev => {
-        const updated = [...prev, upgrade.card];
-        deckRef.current = updated;
-        return updated;
-      });
-
-      const newCard = generateRandomCard();
-      setUpgrades(prev =>
-        prev.map(u =>
-          u.id === upgrade.id
-            ? {
-                id: `card-${Date.now()}`,
-                type: 'card',
-                name: `${newCard.rank}${newCard.suit}`,
-                cost: upgrade.cost,
-                card: newCard
-              }
-            : u
-        )
+    if (newRoundScore >= roundTarget) {
+      setRoundOutcome('won');
+      setBank((prev) => prev + newRoundScore);
+      setBetFeedback('Round cleared! Start the next round to press your luck.');
+    } else if (newDrawsRemaining <= 0) {
+      setRoundOutcome('lost');
+      setBank(0);
+      setBetFeedback('Round failed. Reset the run to try again.');
+    } else {
+      setBetFeedback(
+        betHit
+          ? `Hit! ${selectedBet.label} paid ${drawScore} points.`
+          : `Missed ${selectedBet.label}. Only ${drawScore} points.`
       );
     }
   };
 
-  const replaceCard = (oldCard: CardType) => {
-    if (!replacingCard) return;
-
-    const replacement = replacingCard;
-
-    setDeck(prev => {
-      const updated = prev.map(card => (card.id === oldCard.id ? replacement : card));
-      deckRef.current = updated;
-      return updated;
-    });
-    setReplacingCard(null);
-
-    setUpgrades(prev => {
-      const index = prev.findIndex(u => u.card?.id === replacement.id);
-      if (index === -1) {
-        return prev;
-      }
-
-      const newCard = generateRandomCard();
-      const current = prev[index];
-      const next = [...prev];
-      next[index] = {
-        id: `card-${Date.now()}`,
-        type: 'card',
-        name: `${newCard.rank}${newCard.suit}`,
-        cost: current?.cost ?? 100,
-        card: newCard
-      };
-      return next;
-    });
+  const handleRecentCardExitComplete = (entryId: string) => {
+    setRecentCards((prev) => prev.filter((entry) => entry.id !== entryId));
   };
 
-  const resetGame = () => {
-    applyFreshState();
+  const handleDrawAnimationEnd = (animationId: string) => {
+    setDrawAnimations((prev) => prev.filter((animation) => animation.id !== animationId));
+  };
+
+  const advanceRound = () => {
+    const nextRoundNumber = roundOutcome === 'won' ? roundNumber + 1 : roundNumber;
+    const refreshedDeck = shuffleDeck(createDeck());
+    deckRef.current = refreshedDeck;
+    setDeck(refreshedDeck);
+    setRoundNumber(nextRoundNumber);
+    setRoundTarget(calculateRoundTarget(nextRoundNumber));
+    setRoundScore(0);
+    setDrawsRemaining(MAX_DRAWS);
+    setRoundOutcome('active');
+    setLastDrawScore(0);
+    setFloatingScores([]);
+    setDrawAnimations([]);
+    setRecentCards([]);
+    setSelectedBetId(null);
+    setBetFeedback(null);
+  };
+
+  const resetRun = () => {
+    const refreshedDeck = shuffleDeck(createDeck());
+    deckRef.current = refreshedDeck;
+    setDeck(refreshedDeck);
+    setBank(0);
+    setRoundNumber(1);
+    setRoundTarget(calculateRoundTarget(1));
+    setRoundScore(0);
+    setDrawsRemaining(MAX_DRAWS);
+    setRoundOutcome('active');
+    setLastDrawScore(0);
+    setFloatingScores([]);
+    setDrawAnimations([]);
+    setRecentCards([]);
+    setSelectedBetId(null);
+    setBetFeedback(null);
   };
 
   const hardResetGame = () => {
@@ -536,30 +589,42 @@ export default function Home() {
     } catch (error) {
       console.warn('Failed to remove stored game state.', error);
     }
-    applyFreshState();
+
+    resetRun();
   };
+
+  const drawButtonDisabled =
+    roundOutcome !== 'active' || !selectedBet || drawsRemaining <= 0;
 
   return (
     <div className="min-h-screen bg-black text-white flex">
-      {/* Left Panel - 35% */}
-      <div className="w-[35%] bg-gray-950 border-r border-gray-800 flex flex-col">
-        {/* Header */}
-        <div className="p-8 border-b border-gray-800">
-          <h1 className="text-3xl font-bold text-blue-400">Card Clicker</h1>
+      {/* Left Panel - gameplay */}
+      <div className="w-[35%] bg-gray-950 border-r border-gray-900 flex flex-col">
+        <div className="p-8 border-b border-gray-900 flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-blue-400">Card Risk</h1>
+            <div className="text-xs uppercase tracking-widest text-gray-500 mt-2">
+              Round {roundNumber} • Target {roundTarget} • Bank {bank}
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-xs uppercase tracking-wider text-gray-500 mb-1">Draws</div>
+            <div className="text-lg font-semibold text-sky-300">
+              {drawsRemaining}/{MAX_DRAWS}
+            </div>
+          </div>
         </div>
 
-        {/* Main Content */}
         <div className="flex-1 p-8 space-y-6 overflow-y-auto">
-          {/* Deck & Score */}
+          {/* Deck and score */}
           <div className="relative">
             <div className="flex justify-between items-center mb-4">
               <div className="text-xs uppercase tracking-wider text-gray-500">Deck</div>
-              <div className="text-sm text-gray-400">{deck.length} cards</div>
+              <div className="text-sm text-gray-400">{deck.length} cards left</div>
             </div>
 
             <div className="flex flex-col md:flex-row gap-6 mb-4">
               <div className="relative h-56 bg-gray-900/50 rounded-xl border border-gray-800 flex flex-1 items-center justify-start px-8 overflow-hidden">
-                {/* Deck stack */}
                 <div className="relative w-32 h-44">
                   {[...Array(Math.min(8, Math.max(1, Math.ceil(deck.length / 10))))].map((_, i) => (
                     <div
@@ -568,7 +633,7 @@ export default function Home() {
                       style={{
                         transform: `translate(${i * 1.5}px, ${i * -1.5}px)`,
                         zIndex: 10 - i,
-                        opacity: 1 - (i * 0.08)
+                        opacity: 1 - i * 0.08
                       }}
                     />
                   ))}
@@ -594,78 +659,97 @@ export default function Home() {
                   </div>
                 ))}
 
-                {/* Floating scores */}
                 {floatingScores.map((fs) => (
                   <div
                     key={fs.id}
-                    className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none text-4xl font-bold text-blue-400"
+                    className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none text-4xl font-bold ${
+                      fs.hit ? 'text-emerald-400' : 'text-rose-500'
+                    }`}
                     style={{ animation: 'floatUp 2s ease-out forwards' }}
                   >
-                    +{fs.value}
+                    {fs.hit ? '+' : ''}{fs.value}
                   </div>
                 ))}
               </div>
 
-              <div className={`w-full md:w-[220px] lg:w-[240px] flex flex-col justify-between gap-3 ${scoreCardClass}`}>
+              <div className={`w-full md:w-[230px] lg:w-[240px] flex flex-col gap-4 ${scoreCardClass}`}>
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-gray-400 mb-2">Score</div>
+                  <div className="text-xs uppercase tracking-wider text-gray-400 mb-1">
+                    Round Score
+                  </div>
                   <div className={`text-5xl font-bold leading-tight ${totalScoreClass}`}>
-                    {Math.floor(score)}
+                    {roundScore}
                   </div>
                 </div>
-                {lastScoreAdded > 0 ? (
-                  <div className="flex flex-col gap-1">
-                    <span className={`text-2xl font-semibold ${gainScoreClass}`}>
-                      +{lastScoreAdded}
-                    </span>
-                    <span className={`text-xs uppercase tracking-wide ${ratioTagClass}`}>
-                      {ratioLabel}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-400">Target</span>
+                    <span className="text-sm font-semibold text-gray-200">{roundTarget}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-400">Last Draw</span>
+                    <span className={`text-lg font-semibold ${gainScoreClass}`}>
+                      {lastDrawScore > 0 ? `+${lastDrawScore}` : lastDrawScore}
                     </span>
                   </div>
-                ) : (
-                  <div className="text-xs uppercase tracking-wide text-gray-600">
-                    Draw a card to build your score
+                  <div className="w-full h-2 bg-gray-800/60 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full ${
+                        roundOutcome === 'lost'
+                          ? 'bg-rose-500'
+                          : roundProgress >= 1
+                            ? 'bg-amber-400'
+                            : 'bg-sky-500'
+                      }`}
+                      style={{ width: `${Math.min(roundProgress * 100, 100)}%` }}
+                    />
                   </div>
-                )}
+                  <div className={`text-xs uppercase tracking-wide ${ratioTagClass}`}>
+                    {ratioLabel}
+                  </div>
+                </div>
               </div>
             </div>
 
             <button
               onClick={drawCard}
-              className="w-full bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-medium py-4 rounded-lg transition-colors"
+              disabled={drawButtonDisabled}
+              className={`w-full text-white font-medium py-4 rounded-lg transition-all ${
+                drawButtonDisabled
+                  ? 'bg-gray-800 text-gray-500 cursor-not-allowed border border-gray-800'
+                  : 'bg-blue-600 hover:bg-blue-500 active:bg-blue-700 border border-blue-500/60 shadow-[0_12px_22px_rgba(37,99,235,0.25)]'
+              }`}
             >
-              Draw Card
+              {roundOutcome === 'active'
+                ? selectedBet
+                  ? `Draw with ${selectedBet.label}`
+                  : 'Select a bet to draw'
+                : roundOutcome === 'won'
+                  ? 'Round cleared'
+                  : 'Round failed'}
             </button>
+            {betFeedback && (
+              <div className="mt-2 text-sm text-gray-300">{betFeedback}</div>
+            )}
           </div>
 
-          {/* Multipliers */}
           <div>
-            <div className="text-xs uppercase tracking-wider text-gray-500 mb-3">Multipliers</div>
-            <div className="space-y-2">
-              <div className="flex justify-between text-sm py-2 px-3 bg-gray-900/50 rounded-lg border border-gray-800">
-                <span className="text-gray-400">Same Suit</span>
-                <span className="text-blue-400 font-medium">{sameSuitMult.toFixed(1)}x</span>
-              </div>
-              <div className="flex justify-between text-sm py-2 px-3 bg-gray-900/50 rounded-lg border border-gray-800">
-                <span className="text-gray-400">Same Rank</span>
-                <span className="text-blue-400 font-medium">{sameRankMult.toFixed(1)}x</span>
-              </div>
+            <div className="text-xs uppercase tracking-wider text-gray-500 mb-3">
+              Recent Cards
             </div>
-          </div>
-
-          {/* Recent Cards */}
-          {displayedRecentCards.length > 0 && (
-            <div>
-              <div className="text-xs uppercase tracking-wider text-gray-500 mb-3">Recent Cards</div>
+            {displayedRecentCards.length > 0 ? (
               <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
                 {displayedRecentCards.map((entry) => {
-                  const activeIndex = activeRecentCards.findIndex(item => item.id === entry.id);
+                  const activeIndex = activeRecentCards.findIndex((item) => item.id === entry.id);
                   const activeCount = activeRecentCards.length;
-                  const opacity = activeIndex === -1
-                    ? 0.4
-                    : activeCount === 1
-                      ? 1
-                      : 0.4 + ((activeCount - activeIndex - 1) / (activeCount - 1)) * 0.6;
+                  const opacity =
+                    activeIndex === -1
+                      ? 0.4
+                      : activeCount === 1
+                        ? 1
+                        : 0.4 + ((activeCount - activeIndex - 1) / (activeCount - 1)) * 0.6;
+
+                  const betLabel = entry.betId ? betOptionMap.get(entry.betId)?.label ?? '' : '';
 
                   return (
                     <RecentCardItem
@@ -673,113 +757,120 @@ export default function Home() {
                       card={entry.card}
                       status={entry.status}
                       opacity={opacity}
-                      onExitComplete={entry.status === 'exit' ? () => handleRecentCardExitComplete(entry.id) : undefined}
+                      betHit={entry.betHit}
+                      gain={entry.gain}
+                      betLabel={betLabel}
+                      onExitComplete={
+                        entry.status === 'exit'
+                          ? () => handleRecentCardExitComplete(entry.id)
+                          : undefined
+                      }
                     />
                   );
                 })}
               </div>
-            </div>
-          )}
-        </div>
+            ) : (
+              <div className="text-sm text-gray-600">Draw cards to populate the recent queue.</div>
+            )}
+          </div>
 
-        {/* Footer */}
-        <div className="p-8 border-t border-gray-800 space-y-3">
-          <button
-            onClick={resetGame}
-            className="w-full bg-gray-900 hover:bg-gray-800 text-gray-300 hover:text-white font-medium py-3 rounded-lg transition-colors border border-gray-800"
-          >
-            Reset Game
-          </button>
-          <button
-            onClick={hardResetGame}
-            className="w-full bg-red-900/30 hover:bg-red-900/40 text-red-400 hover:text-red-200 font-semibold py-3 rounded-lg transition-colors border border-red-700/60"
-          >
-            Hard Reset (Wipe Progress)
-          </button>
+          <div className="space-y-3">
+            <button
+              onClick={advanceRound}
+              disabled={roundOutcome !== 'won'}
+              className={`w-full py-3 rounded-lg font-semibold transition-all ${
+                roundOutcome === 'won'
+                  ? 'bg-emerald-500/20 border border-emerald-400/40 text-emerald-200 hover:bg-emerald-500/30'
+                  : 'bg-gray-900 border border-gray-800 text-gray-500 cursor-not-allowed'
+              }`}
+            >
+              Start Next Round
+            </button>
+            <div className="flex gap-3">
+              <button
+                onClick={resetRun}
+                className="flex-1 bg-gray-900 hover:bg-gray-800 text-gray-300 hover:text-white font-medium py-3 rounded-lg transition-colors border border-gray-800"
+              >
+                Reset Run
+              </button>
+              <button
+                onClick={hardResetGame}
+                className="flex-1 bg-red-900/30 hover:bg-red-900/40 text-red-400 hover:text-red-200 font-semibold py-3 rounded-lg transition-colors border border-red-700/60"
+              >
+                Hard Reset
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Right Panel - 65% */}
+      {/* Right Panel - betting interface */}
       <div className="w-[65%] p-12 overflow-y-auto">
-        <h2 className="text-2xl font-bold text-blue-400 mb-8">Upgrades</h2>
+        <div className="flex items-baseline justify-between mb-8">
+          <div>
+            <h2 className="text-2xl font-bold text-blue-400">Bet the Next Card</h2>
+            <p className="text-sm text-gray-400 mt-2">
+              Choose exactly one prediction before each draw. Hitting your bet multiplies the card
+              value; missing it clips your gain. Clear the round target in four draws to bank the
+              points.
+            </p>
+          </div>
+          <div className="text-right">
+            <div className="text-xs uppercase tracking-wider text-gray-500">Bank</div>
+            <div className="text-3xl font-bold text-sky-300">{bank}</div>
+          </div>
+        </div>
 
-        <div className="grid grid-cols-3 gap-6">
-          {upgrades.map((upgrade) => (
-            <button
-              key={upgrade.id}
-              onClick={() => buyUpgrade(upgrade)}
-              disabled={score < upgrade.cost}
-              className={`
-                relative p-6 rounded-xl border transition-all
-                ${score >= upgrade.cost
-                  ? 'bg-gray-900/40 border-blue-600/50 hover:border-blue-500 hover:bg-gray-900/60 cursor-pointer'
-                  : 'bg-gray-900/20 border-gray-800 opacity-30 cursor-not-allowed'
-                }
-              `}
-            >
-              {upgrade.type === 'card' && upgrade.card ? (
-                <div className="flex flex-col items-center space-y-4">
-                  <Card
-                    suit={upgrade.card.suit}
-                    rank={upgrade.card.rank}
-                    isJoker={upgrade.card.isJoker}
-                    jokerColor={upgrade.card.jokerColor}
-                  />
-                  <div className="text-center">
-                    <div className="text-2xl font-bold text-blue-400">{upgrade.cost}</div>
-                    <div className="text-xs text-gray-500 mt-1">points</div>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="text-sm text-gray-300 font-medium leading-snug">
-                    {upgrade.name}
-                  </div>
-                  <div className="pt-2 border-t border-gray-800">
-                    <div className="text-xs text-gray-500 mb-1">Cost</div>
-                    <div className="text-2xl font-bold text-blue-400">{upgrade.cost}</div>
-                  </div>
-                  <div className="text-xs text-gray-600">+0.5x multiplier</div>
-                </div>
-              )}
-            </button>
+        <div className="grid grid-cols-2 xl:grid-cols-3 gap-5">
+          {Object.entries(betsByCategory).map(([category, options]) => (
+            <div key={category} className="bg-gray-900/40 border border-gray-800 rounded-2xl p-5">
+              <div className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-4">
+                {category} Bets
+              </div>
+              <div className="space-y-3">
+                {options.map((option) => {
+                  const isSelected = selectedBetId === option.id;
+                  const riskTone =
+                    option.risk === 'extreme'
+                      ? 'text-rose-300 bg-rose-500/10 border-rose-500/40'
+                      : option.risk === 'high'
+                        ? 'text-amber-300 bg-amber-500/10 border-amber-500/40'
+                        : option.risk === 'medium'
+                          ? 'text-sky-300 bg-sky-500/10 border-sky-500/40'
+                          : 'text-emerald-300 bg-emerald-500/10 border-emerald-500/40';
+
+                  return (
+                    <button
+                      key={option.id}
+                      onClick={() => {
+                        setSelectedBetId(option.id);
+                        setBetFeedback(null);
+                      }}
+                      className={`w-full text-left p-4 rounded-xl border transition-all ${
+                        isSelected
+                          ? 'border-emerald-400 bg-emerald-500/20 shadow-[0_15px_30px_rgba(16,185,129,0.25)]'
+                          : 'border-gray-800 bg-gray-900/50 hover:border-gray-700 hover:bg-gray-900/70'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-semibold text-gray-100">
+                          {option.label}
+                        </span>
+                        <span
+                          className={`text-[11px] font-semibold px-2 py-1 rounded-full border ${riskTone}`}
+                        >
+                          {option.multiplier.toFixed(2)}× · {option.risk.toUpperCase()}
+                        </span>
+                      </div>
+                      <div className="text-xs text-gray-400">{option.description}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           ))}
         </div>
       </div>
-
-      {/* Card Replacement Modal */}
-      {replacingCard && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-8">
-          <div className="bg-gray-950 rounded-2xl border border-gray-800 p-8 max-w-6xl w-full max-h-[90vh] overflow-y-auto">
-            <h2 className="text-2xl font-bold text-blue-400 mb-2">Replace a Card</h2>
-            <p className="text-gray-400 mb-8">Your deck is full. Select a card to replace:</p>
-
-            <div className="grid grid-cols-10 gap-3 mb-8">
-              {deck.map((card) => (
-                <button
-                  key={card.id}
-                  onClick={() => replaceCard(card)}
-                  className="hover:scale-105 transition-transform"
-                >
-                  <Card
-                    suit={card.suit}
-                    rank={card.rank}
-                    isJoker={card.isJoker}
-                    jokerColor={card.jokerColor}
-                  />
-                </button>
-              ))}
-            </div>
-
-            <button
-              onClick={() => setReplacingCard(null)}
-              className="bg-gray-900 hover:bg-gray-800 text-gray-400 hover:text-white font-medium py-3 px-6 rounded-lg transition-colors border border-gray-800"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
 
       <style jsx>{`
         @keyframes floatUp {
