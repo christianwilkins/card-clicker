@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Card, { type CardType, type Suit, type Rank } from '@/components/Card';
 import RecentCardItem, { type RecentCardStatus } from '@/components/RecentCardItem';
 
@@ -27,6 +27,48 @@ interface RecentCardEntry {
   status: RecentCardStatus;
 }
 
+interface DrawAnimation {
+  id: string;
+  card: CardType;
+}
+
+interface StoredGameState {
+  deck: CardType[];
+  score: number;
+  recentCards: RecentCardEntry[];
+  sameSuitMult: number;
+  sameRankMult: number;
+  upgrades: Upgrade[];
+}
+
+const STORAGE_KEY = 'card-clicker-progress-v1';
+
+function createJokerCard(color: 'red' | 'black', id?: string): CardType {
+  return {
+    suit: 'Joker',
+    rank: 'Joker',
+    id: id ?? `joker-${color}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    isJoker: true,
+    jokerColor: color
+  };
+}
+
+function normalizeStoredCard(card: CardType): CardType {
+  if (card.rank === 'Joker' || card.suit === 'Joker' || card.isJoker) {
+    return {
+      ...card,
+      suit: 'Joker',
+      rank: 'Joker',
+      isJoker: true,
+      jokerColor: card.jokerColor ?? 'black'
+    };
+  }
+  return {
+    ...card,
+    isJoker: false
+  };
+}
+
 function createDeck(): CardType[] {
   const deck: CardType[] = [];
   for (const suit of suits) {
@@ -38,6 +80,8 @@ function createDeck(): CardType[] {
       });
     }
   }
+  deck.push(createJokerCard('red', 'joker-red'));
+  deck.push(createJokerCard('black', 'joker-black'));
   return deck;
 }
 
@@ -51,6 +95,7 @@ function shuffleDeck(deck: CardType[]): CardType[] {
 }
 
 function getRankValue(rank: Rank): number {
+  if (rank === 'Joker') return 15;
   if (rank === 'A') return 11;
   if (rank === 'J') return 11;
   if (rank === 'Q') return 12;
@@ -59,6 +104,9 @@ function getRankValue(rank: Rank): number {
 }
 
 function generateRandomCard(): CardType {
+  if (Math.random() < 0.05) {
+    return createJokerCard(Math.random() > 0.5 ? 'red' : 'black');
+  }
   const suit = suits[Math.floor(Math.random() * suits.length)];
   const rank = ranks[Math.floor(Math.random() * ranks.length)];
   return { suit, rank, id: `${rank}${suit}-${Date.now()}` };
@@ -107,23 +155,181 @@ export default function Home() {
   const [replacingCard, setReplacingCard] = useState<CardType | null>(null);
   const [floatingScores, setFloatingScores] = useState<FloatingScore[]>([]);
   const [lastScoreAdded, setLastScoreAdded] = useState<number>(0);
+  const [drawAnimations, setDrawAnimations] = useState<DrawAnimation[]>([]);
+  const [readyToPersist, setReadyToPersist] = useState(false);
+  const hasLoadedRef = useRef(false);
+  const deckRef = useRef<CardType[]>(deck);
 
   const activeRecentCards = recentCards.filter(entry => entry.status !== 'exit');
   const exitingRecentCards = recentCards.filter(entry => entry.status === 'exit');
   const displayedRecentCards = [...activeRecentCards, ...exitingRecentCards];
 
+  const previousScore = Math.max(score - lastScoreAdded, 0);
+  const ratioDenominator = previousScore > 0 ? previousScore : Math.max(lastScoreAdded, 1);
+  const gainRatio = lastScoreAdded > 0 ? lastScoreAdded / ratioDenominator : 0;
+  let scoreCardClass =
+    'rounded-xl px-6 py-5 bg-gray-900/50 border border-gray-800 shadow-[0_10px_30px_rgba(15,23,42,0.25)] transition-all duration-200';
+  let totalScoreClass = 'text-slate-100';
+  let gainScoreClass = lastScoreAdded > 0 ? 'text-sky-400' : 'text-gray-500';
+  let ratioTagClass = lastScoreAdded > 0 ? 'text-sky-300/80' : 'text-gray-600';
+  let ratioLabel = '';
+
+  if (lastScoreAdded > 0) {
+    const ratioPercentRaw = gainRatio * 100;
+    const roundedPercent = Math.round(Math.min(ratioPercentRaw, 999));
+    if (ratioPercentRaw >= 100) {
+      ratioLabel = '100%+ of progress';
+    } else if (roundedPercent <= 0 && ratioPercentRaw > 0) {
+      ratioLabel = '<1% of progress';
+    } else {
+      ratioLabel = `${roundedPercent}% of progress`;
+    }
+
+    if (gainRatio >= 0.75) {
+      scoreCardClass =
+        'rounded-xl px-6 py-5 bg-gradient-to-br from-amber-500/20 via-gray-900/55 to-gray-950 border border-amber-400/50 shadow-[0_18px_45px_rgba(251,191,36,0.25)] transition-all duration-200';
+      totalScoreClass = 'text-amber-200';
+      gainScoreClass = 'text-amber-300';
+      ratioTagClass = 'text-amber-200/80';
+    } else if (gainRatio >= 0.4) {
+      scoreCardClass =
+        'rounded-xl px-6 py-5 bg-gradient-to-br from-emerald-500/18 via-gray-900/55 to-gray-950 border border-emerald-400/40 shadow-[0_16px_40px_rgba(16,185,129,0.22)] transition-all duration-200';
+      totalScoreClass = 'text-emerald-200';
+      gainScoreClass = 'text-emerald-300';
+      ratioTagClass = 'text-emerald-200/80';
+    } else if (gainRatio >= 0.18) {
+      scoreCardClass =
+        'rounded-xl px-6 py-5 bg-gradient-to-br from-sky-500/15 via-gray-900/55 to-gray-950 border border-sky-400/30 shadow-[0_14px_35px_rgba(56,189,248,0.2)] transition-all duration-200';
+      totalScoreClass = 'text-sky-200';
+      gainScoreClass = 'text-sky-300';
+      ratioTagClass = 'text-sky-200/80';
+    } else {
+      gainScoreClass = 'text-sky-400';
+      ratioTagClass = 'text-sky-300/80';
+    }
+  }
+
   useEffect(() => {
-    setDeck(shuffleDeck(createDeck()));
-    setUpgrades(generateUpgrades());
-  }, []);
+    deckRef.current = deck;
+  }, [deck]);
+
+  useEffect(() => {
+    if (hasLoadedRef.current) return;
+    if (typeof window === 'undefined') return;
+
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored) as Partial<StoredGameState>;
+
+        if (parsed.deck && Array.isArray(parsed.deck) && parsed.deck.length > 0) {
+          const hydratedDeck = parsed.deck.map(normalizeStoredCard);
+          deckRef.current = hydratedDeck;
+          setDeck(hydratedDeck);
+        } else {
+          const freshDeck = shuffleDeck(createDeck());
+          deckRef.current = freshDeck;
+          setDeck(freshDeck);
+        }
+
+        setScore(typeof parsed.score === 'number' && !Number.isNaN(parsed.score) ? parsed.score : 0);
+        setSameSuitMult(
+          typeof parsed.sameSuitMult === 'number' && parsed.sameSuitMult > 0 ? parsed.sameSuitMult : 1
+        );
+        setSameRankMult(
+          typeof parsed.sameRankMult === 'number' && parsed.sameRankMult > 0 ? parsed.sameRankMult : 1
+        );
+        if (parsed.upgrades && Array.isArray(parsed.upgrades) && parsed.upgrades.length > 0) {
+          const hydratedUpgrades = parsed.upgrades.map((item) =>
+            item.type === 'card' && item.card
+              ? {
+                  ...item,
+                  card: normalizeStoredCard(item.card)
+                }
+              : item
+          );
+          setUpgrades(hydratedUpgrades);
+        } else {
+          setUpgrades(generateUpgrades());
+        }
+        if (parsed.recentCards && Array.isArray(parsed.recentCards)) {
+          setRecentCards(
+            parsed.recentCards.map(entry => ({
+              ...entry,
+              card: normalizeStoredCard(entry.card),
+              status: 'idle' as RecentCardStatus
+            }))
+          );
+        } else {
+          setRecentCards([]);
+        }
+      } else {
+        const freshDeck = shuffleDeck(createDeck());
+        deckRef.current = freshDeck;
+        setDeck(freshDeck);
+        setUpgrades(generateUpgrades());
+      }
+    } catch (error) {
+      console.warn('Failed to load stored game state, resetting progress.', error);
+      const freshDeck = shuffleDeck(createDeck());
+      deckRef.current = freshDeck;
+      setDeck(freshDeck);
+      setUpgrades(generateUpgrades());
+      setScore(0);
+      setSameSuitMult(1);
+      setSameRankMult(1);
+      setRecentCards([]);
+    } finally {
+      hasLoadedRef.current = true;
+      setReadyToPersist(true);
+    }
+  }, [hasLoadedRef]);
+
+  useEffect(() => {
+    if (!readyToPersist || typeof window === 'undefined') return;
+
+    const sanitizedRecentCards = recentCards.map(entry => ({
+      ...entry,
+      status: 'idle' as RecentCardStatus
+    }));
+
+    const stateToStore: StoredGameState = {
+      deck,
+      score,
+      recentCards: sanitizedRecentCards,
+      sameSuitMult,
+      sameRankMult,
+      upgrades
+    };
+
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(stateToStore));
+    } catch (error) {
+      console.warn('Failed to persist game state to localStorage.', error);
+    }
+  }, [deck, score, recentCards, sameSuitMult, sameRankMult, upgrades, readyToPersist]);
 
   const drawCard = () => {
-    if (deck.length === 0) {
-      setDeck(shuffleDeck(createDeck()));
+    let deckToUse = deckRef.current;
+
+    if (!deckToUse) {
+      deckToUse = createDeck();
+    }
+
+    if (deckToUse.length === 0) {
+      deckToUse = shuffleDeck(createDeck());
+    }
+
+    if (deckToUse.length === 0) {
       return;
     }
 
-    const [drawnCard, ...remainingDeck] = deck;
+    const [drawnCard, ...remainingDeck] = deckToUse;
+    if (!drawnCard) {
+      return;
+    }
+
+    deckRef.current = remainingDeck;
     setDeck(remainingDeck);
 
     let cardScore = getRankValue(drawnCard.rank);
@@ -150,8 +356,10 @@ export default function Home() {
       setFloatingScores(prev => prev.filter(s => s.id !== floatingScore.id));
     }, 2000);
 
-    setScore(score + finalScore);
+    setScore(prev => prev + finalScore);
     setLastScoreAdded(finalScore);
+
+    const cardForQueue = drawnCard;
 
     setRecentCards(prev => {
       const normalized = prev.map(entry =>
@@ -164,8 +372,8 @@ export default function Home() {
       const exitEntries = normalized.filter(entry => entry.status === 'exit');
 
       const newEntry: RecentCardEntry = {
-        id: `${drawnCard.id}-${Date.now()}`,
-        card: drawnCard,
+        id: `${cardForQueue.id}-${Date.now()}`,
+        card: cardForQueue,
         status: 'enter'
       };
 
@@ -184,82 +392,23 @@ export default function Home() {
 
       return [...keptActive, ...overflowActive, ...exitEntries];
     });
+
+    const animationId = `draw-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    setDrawAnimations(prev => [...prev, { id: animationId, card: cardForQueue }]);
   };
 
   const handleRecentCardExitComplete = (entryId: string) => {
     setRecentCards(prev => prev.filter(entry => entry.id !== entryId));
   };
 
-  const buyUpgrade = (upgrade: Upgrade) => {
-    if (score < upgrade.cost) return;
-
-    setScore(score - upgrade.cost);
-
-    if (upgrade.type === 'sameSuitMult') {
-      setSameSuitMult(sameSuitMult + (upgrade.value || 0));
-      setUpgrades(upgrades.filter(u => u.id !== upgrade.id));
-      setTimeout(() => {
-        setUpgrades(prev => [...prev, {
-          id: `suit-mult-${Date.now()}`,
-          type: 'sameSuitMult',
-          name: 'Same Suit Multiplier',
-          cost: Math.floor(upgrade.cost * 1.5),
-          value: 0.5
-        }]);
-      }, 100);
-    } else if (upgrade.type === 'sameRankMult') {
-      setSameRankMult(sameRankMult + (upgrade.value || 0));
-      setUpgrades(upgrades.filter(u => u.id !== upgrade.id));
-      setTimeout(() => {
-        setUpgrades(prev => [...prev, {
-          id: `rank-mult-${Date.now()}`,
-          type: 'sameRankMult',
-          name: 'Same Rank Multiplier',
-          cost: Math.floor(upgrade.cost * 1.5),
-          value: 0.5
-        }]);
-      }, 100);
-    } else if (upgrade.type === 'card' && upgrade.card) {
-      if (deck.length >= 52) {
-        setReplacingCard(upgrade.card);
-      } else {
-        setDeck([...deck, upgrade.card]);
-        setUpgrades(upgrades.filter(u => u.id !== upgrade.id));
-        setTimeout(() => {
-          const newCard = generateRandomCard();
-          setUpgrades(prev => [...prev, {
-            id: `card-${Date.now()}`,
-            type: 'card',
-            name: `${newCard.rank}${newCard.suit}`,
-            cost: 100,
-            card: newCard
-          }]);
-        }, 100);
-      }
-    }
+  const handleDrawAnimationEnd = (animationId: string) => {
+    setDrawAnimations(prev => prev.filter(animation => animation.id !== animationId));
   };
 
-  const replaceCard = (oldCard: CardType) => {
-    if (!replacingCard) return;
-
-    setDeck(deck.map(card => card.id === oldCard.id ? replacingCard : card));
-    setReplacingCard(null);
-
-    setUpgrades(upgrades.filter(u => u.card?.id !== replacingCard.id));
-    setTimeout(() => {
-      const newCard = generateRandomCard();
-      setUpgrades(prev => [...prev, {
-        id: `card-${Date.now()}`,
-        type: 'card',
-        name: `${newCard.rank}${newCard.suit}`,
-        cost: 100,
-        card: newCard
-      }]);
-    }, 100);
-  };
-
-  const resetGame = () => {
-    setDeck(shuffleDeck(createDeck()));
+  const applyFreshState = () => {
+    const refreshedDeck = shuffleDeck(createDeck());
+    deckRef.current = refreshedDeck;
+    setDeck(refreshedDeck);
     setScore(0);
     setRecentCards([]);
     setSameSuitMult(1);
@@ -268,6 +417,126 @@ export default function Home() {
     setReplacingCard(null);
     setFloatingScores([]);
     setLastScoreAdded(0);
+    setDrawAnimations([]);
+  };
+
+  const buyUpgrade = (upgrade: Upgrade) => {
+    if (score < upgrade.cost) return;
+
+    setScore(prev => prev - upgrade.cost);
+
+    if (upgrade.type === 'sameSuitMult') {
+      const increment = upgrade.value ?? 0.5;
+      const nextCost = Math.max(upgrade.cost + 10, Math.floor(upgrade.cost * 1.5));
+
+      setSameSuitMult(prev => prev + increment);
+      setUpgrades(prev =>
+        prev.map(u =>
+          u.id === upgrade.id
+            ? {
+                id: `suit-mult-${Date.now()}`,
+                type: 'sameSuitMult',
+                name: 'Same Suit Multiplier',
+                cost: nextCost,
+                value: increment
+              }
+            : u
+        )
+      );
+    } else if (upgrade.type === 'sameRankMult') {
+      const increment = upgrade.value ?? 0.5;
+      const nextCost = Math.max(upgrade.cost + 10, Math.floor(upgrade.cost * 1.5));
+
+      setSameRankMult(prev => prev + increment);
+      setUpgrades(prev =>
+        prev.map(u =>
+          u.id === upgrade.id
+            ? {
+                id: `rank-mult-${Date.now()}`,
+                type: 'sameRankMult',
+                name: 'Same Rank Multiplier',
+                cost: nextCost,
+                value: increment
+              }
+            : u
+        )
+      );
+    } else if (upgrade.type === 'card' && upgrade.card) {
+      if (deckRef.current.length >= 54) {
+        setReplacingCard(upgrade.card);
+        return;
+      }
+
+      setDeck(prev => {
+        const updated = [...prev, upgrade.card];
+        deckRef.current = updated;
+        return updated;
+      });
+
+      const newCard = generateRandomCard();
+      setUpgrades(prev =>
+        prev.map(u =>
+          u.id === upgrade.id
+            ? {
+                id: `card-${Date.now()}`,
+                type: 'card',
+                name: `${newCard.rank}${newCard.suit}`,
+                cost: upgrade.cost,
+                card: newCard
+              }
+            : u
+        )
+      );
+    }
+  };
+
+  const replaceCard = (oldCard: CardType) => {
+    if (!replacingCard) return;
+
+    const replacement = replacingCard;
+
+    setDeck(prev => {
+      const updated = prev.map(card => (card.id === oldCard.id ? replacement : card));
+      deckRef.current = updated;
+      return updated;
+    });
+    setReplacingCard(null);
+
+    setUpgrades(prev => {
+      const index = prev.findIndex(u => u.card?.id === replacement.id);
+      if (index === -1) {
+        return prev;
+      }
+
+      const newCard = generateRandomCard();
+      const current = prev[index];
+      const next = [...prev];
+      next[index] = {
+        id: `card-${Date.now()}`,
+        type: 'card',
+        name: `${newCard.rank}${newCard.suit}`,
+        cost: current?.cost ?? 100,
+        card: newCard
+      };
+      return next;
+    });
+  };
+
+  const resetGame = () => {
+    applyFreshState();
+  };
+
+  const hardResetGame = () => {
+    if (typeof window === 'undefined') return;
+    const confirmed = window.confirm('ARE YOU SURE?');
+    if (!confirmed) return;
+
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (error) {
+      console.warn('Failed to remove stored game state.', error);
+    }
+    applyFreshState();
   };
 
   return (
@@ -281,48 +550,84 @@ export default function Home() {
 
         {/* Main Content */}
         <div className="flex-1 p-8 space-y-6 overflow-y-auto">
-          {/* Score */}
-          <div>
-            <div className="text-xs uppercase tracking-wider text-gray-500 mb-2">Score</div>
-            <div className="text-6xl font-bold text-white mb-2">{Math.floor(score)}</div>
-            {lastScoreAdded > 0 && (
-              <div className="text-lg text-blue-400 font-medium">+{lastScoreAdded}</div>
-            )}
-          </div>
-
-          {/* Deck */}
+          {/* Deck & Score */}
           <div className="relative">
             <div className="flex justify-between items-center mb-4">
               <div className="text-xs uppercase tracking-wider text-gray-500">Deck</div>
               <div className="text-sm text-gray-400">{deck.length} cards</div>
             </div>
 
-            <div className="relative h-56 bg-gray-900/50 rounded-xl border border-gray-800 flex items-center justify-center mb-4">
-              {/* Deck stack */}
-              <div className="relative w-32 h-44">
-                {[...Array(Math.min(8, Math.max(1, Math.ceil(deck.length / 10))))].map((_, i) => (
+            <div className="flex flex-col md:flex-row gap-6 mb-4">
+              <div className="relative h-56 bg-gray-900/50 rounded-xl border border-gray-800 flex flex-1 items-center justify-start px-8 overflow-hidden">
+                {/* Deck stack */}
+                <div className="relative w-32 h-44">
+                  {[...Array(Math.min(8, Math.max(1, Math.ceil(deck.length / 10))))].map((_, i) => (
+                    <div
+                      key={i}
+                      className="deck-card-layer absolute inset-0 rounded-lg"
+                      style={{
+                        transform: `translate(${i * 1.5}px, ${i * -1.5}px)`,
+                        zIndex: 10 - i,
+                        opacity: 1 - (i * 0.08)
+                      }}
+                    />
+                  ))}
+                </div>
+
+                {drawAnimations.map((animation) => (
                   <div
-                    key={i}
-                    className="absolute inset-0 bg-gradient-to-br from-blue-600 to-blue-700 rounded-lg"
-                    style={{
-                      transform: `translate(${i * 1.5}px, ${i * -1.5}px)`,
-                      zIndex: 10 - i,
-                      opacity: 1 - (i * 0.08)
-                    }}
-                  />
+                    key={animation.id}
+                    className="absolute left-8 pointer-events-none"
+                    style={{ top: 'calc(50% - 88px)', zIndex: 30 }}
+                  >
+                    <div
+                      className="animate-draw-card"
+                      onAnimationEnd={() => handleDrawAnimationEnd(animation.id)}
+                    >
+                      <Card
+                        suit={animation.card.suit}
+                        rank={animation.card.rank}
+                        isJoker={animation.card.isJoker}
+                        jokerColor={animation.card.jokerColor}
+                      />
+                    </div>
+                  </div>
+                ))}
+
+                {/* Floating scores */}
+                {floatingScores.map((fs) => (
+                  <div
+                    key={fs.id}
+                    className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none text-4xl font-bold text-blue-400"
+                    style={{ animation: 'floatUp 2s ease-out forwards' }}
+                  >
+                    +{fs.value}
+                  </div>
                 ))}
               </div>
 
-              {/* Floating scores */}
-              {floatingScores.map((fs) => (
-                <div
-                  key={fs.id}
-                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none text-4xl font-bold text-blue-400"
-                  style={{ animation: 'floatUp 2s ease-out forwards' }}
-                >
-                  +{fs.value}
+              <div className={`w-full md:w-[220px] lg:w-[240px] flex flex-col justify-between gap-3 ${scoreCardClass}`}>
+                <div>
+                  <div className="text-xs uppercase tracking-wider text-gray-400 mb-2">Score</div>
+                  <div className={`text-5xl font-bold leading-tight ${totalScoreClass}`}>
+                    {Math.floor(score)}
+                  </div>
                 </div>
-              ))}
+                {lastScoreAdded > 0 ? (
+                  <div className="flex flex-col gap-1">
+                    <span className={`text-2xl font-semibold ${gainScoreClass}`}>
+                      +{lastScoreAdded}
+                    </span>
+                    <span className={`text-xs uppercase tracking-wide ${ratioTagClass}`}>
+                      {ratioLabel}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="text-xs uppercase tracking-wide text-gray-600">
+                    Draw a card to build your score
+                  </div>
+                )}
+              </div>
             </div>
 
             <button
@@ -378,12 +683,18 @@ export default function Home() {
         </div>
 
         {/* Footer */}
-        <div className="p-8 border-t border-gray-800">
+        <div className="p-8 border-t border-gray-800 space-y-3">
           <button
             onClick={resetGame}
-            className="w-full bg-gray-900 hover:bg-gray-800 text-gray-400 hover:text-white font-medium py-3 rounded-lg transition-colors border border-gray-800"
+            className="w-full bg-gray-900 hover:bg-gray-800 text-gray-300 hover:text-white font-medium py-3 rounded-lg transition-colors border border-gray-800"
           >
             Reset Game
+          </button>
+          <button
+            onClick={hardResetGame}
+            className="w-full bg-red-900/30 hover:bg-red-900/40 text-red-400 hover:text-red-200 font-semibold py-3 rounded-lg transition-colors border border-red-700/60"
+          >
+            Hard Reset (Wipe Progress)
           </button>
         </div>
       </div>
@@ -408,7 +719,12 @@ export default function Home() {
             >
               {upgrade.type === 'card' && upgrade.card ? (
                 <div className="flex flex-col items-center space-y-4">
-                  <Card suit={upgrade.card.suit} rank={upgrade.card.rank} />
+                  <Card
+                    suit={upgrade.card.suit}
+                    rank={upgrade.card.rank}
+                    isJoker={upgrade.card.isJoker}
+                    jokerColor={upgrade.card.jokerColor}
+                  />
                   <div className="text-center">
                     <div className="text-2xl font-bold text-blue-400">{upgrade.cost}</div>
                     <div className="text-xs text-gray-500 mt-1">points</div>
@@ -445,7 +761,12 @@ export default function Home() {
                   onClick={() => replaceCard(card)}
                   className="hover:scale-105 transition-transform"
                 >
-                  <Card suit={card.suit} rank={card.rank} />
+                  <Card
+                    suit={card.suit}
+                    rank={card.rank}
+                    isJoker={card.isJoker}
+                    jokerColor={card.jokerColor}
+                  />
                 </button>
               ))}
             </div>
@@ -494,6 +815,29 @@ export default function Home() {
           }
         }
 
+        @keyframes drawCardSlide {
+          0% {
+            opacity: 0;
+            transform: translate3d(0, -12px, 0) rotate(-6deg);
+          }
+          12% {
+            opacity: 1;
+            transform: translate3d(0, -24px, 0) rotate(-4deg);
+          }
+          38% {
+            opacity: 1;
+            transform: translate3d(24px, -100px, 0) rotate(-1deg);
+          }
+          72% {
+            opacity: 1;
+            transform: translate3d(168px, -24px, 0) rotate(6deg);
+          }
+          100% {
+            opacity: 0;
+            transform: translate3d(260px, 32px, 0) rotate(10deg);
+          }
+        }
+
         :global(.recent-card-item) {
           transition: transform 0.25s ease, opacity 0.3s ease;
           will-change: transform, opacity;
@@ -505,6 +849,34 @@ export default function Home() {
 
         :global(.recent-card-item[data-status='exit']) {
           animation: recentCardExit 0.3s ease-in forwards;
+          pointer-events: none;
+        }
+
+        :global(.animate-draw-card) {
+          animation: drawCardSlide 0.7s ease-in-out forwards;
+          will-change: transform, opacity;
+        }
+
+        :global(.deck-card-layer) {
+          position: absolute;
+          background-color: rgba(30, 64, 175, 0.9);
+          background-image:
+            linear-gradient(135deg, rgba(37, 99, 235, 0.88), rgba(14, 116, 144, 0.92)),
+            repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.08) 6px, rgba(15, 23, 42, 0.1) 6px, rgba(15, 23, 42, 0.1) 12px);
+          box-shadow:
+            inset 0 0 0 1px rgba(255, 255, 255, 0.2),
+            0 6px 14px rgba(15, 23, 42, 0.4);
+          border-radius: 0.75rem;
+          overflow: hidden;
+        }
+
+        :global(.deck-card-layer::after) {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background-image:
+            radial-gradient(circle at 25% 25%, rgba(255, 255, 255, 0.25), transparent 55%),
+            radial-gradient(circle at 70% 70%, rgba(255, 255, 255, 0.18), transparent 60%);
           pointer-events: none;
         }
 

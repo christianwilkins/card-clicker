@@ -21,7 +21,12 @@ function RecentCardItemComponent({ card, status, opacity, onExitComplete }: Rece
       onAnimationEnd={status === 'exit' ? onExitComplete : undefined}
     >
       <div className="pointer-events-none scale-90">
-        <Card suit={card.suit} rank={card.rank} />
+        <Card
+          suit={card.suit}
+          rank={card.rank}
+          isJoker={card.isJoker}
+          jokerColor={card.jokerColor}
+        />
       </div>
     </div>
   );
