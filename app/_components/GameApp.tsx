@@ -50,6 +50,8 @@ interface StoredGameState {
   ownedUpgrades: OwnedUpgrade[];
   recentCards: RecentCardEntry[];
   targetAchieved: boolean;
+  currentShopChoices: ShopUpgrade[];
+  purchasedShopIds: string[];
 }
 
 interface BetOption {
@@ -450,13 +452,6 @@ function cn(...classes: Array<string | false | null | undefined>) {
 
 const templateByName = new Map<string, ShopUpgrade>(upgradeTemplates.map((template) => [template.name, template]));
 
-const rarityWeights: Record<Rarity, number> = {
-  common: 46,
-  uncommon: 28,
-  rare: 18,
-  legendary: 8
-};
-
 function calculateRoundTarget(roundNumber: number, ownedUpgrades: OwnedUpgrade[]): number {
   const base = 38 + (roundNumber - 1) * 6;
   const bonus = ownedUpgrades.reduce((total, upgrade) => {
@@ -467,12 +462,32 @@ function calculateRoundTarget(roundNumber: number, ownedUpgrades: OwnedUpgrade[]
   return Math.max(24, Math.floor(base + bonus));
 }
 
+function getShopSlotCount(roundNumber: number): number {
+  return Math.min(8, 6 + Math.floor((roundNumber - 1) / 3));
+}
+
+function getRarityWeight(rarity: Rarity, roundNumber: number): number {
+  const roundFactor = Math.max(0, roundNumber - 1);
+  switch (rarity) {
+    case 'legendary':
+      return 8 + roundFactor * 2.5;
+    case 'rare':
+      return 18 + roundFactor * 1.5;
+    case 'uncommon':
+      return Math.max(18, 28 - roundFactor * 1.2);
+    case 'common':
+    default:
+      return Math.max(12, 46 - roundFactor * 3.5);
+  }
+}
+
 function generateShopChoices(roundNumber: number): ShopUpgrade[] {
   const choices: ShopUpgrade[] = [];
   const availableTemplates = [...upgradeTemplates];
+  const slotCount = getShopSlotCount(roundNumber);
 
   const cheapPool = availableTemplates.filter((template) => template.cost <= 120);
-  if (cheapPool.length > 0) {
+  if (cheapPool.length > 0 && choices.length < slotCount) {
     const cheapTemplate = cheapPool[Math.floor(Math.random() * cheapPool.length)];
     choices.push({
       ...cheapTemplate,
@@ -484,16 +499,16 @@ function generateShopChoices(roundNumber: number): ShopUpgrade[] {
     }
   }
 
-  while (choices.length < 4 && availableTemplates.length > 0) {
+  while (choices.length < slotCount && availableTemplates.length > 0) {
     const weightTotal = availableTemplates.reduce(
-      (total, template) => total + rarityWeights[template.rarity],
+      (total, template) => total + getRarityWeight(template.rarity, roundNumber),
       0
     );
     let pick = Math.random() * weightTotal;
 
     let selectedIndex = 0;
     for (let i = 0; i < availableTemplates.length; i++) {
-      pick -= rarityWeights[availableTemplates[i].rarity];
+      pick -= getRarityWeight(availableTemplates[i].rarity, roundNumber);
       if (pick <= 0) {
         selectedIndex = i;
         break;
@@ -571,6 +586,7 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
   const [lastDrawnCard, setLastDrawnCard] = useState<CardType | null>(null);
   const [ownedUpgrades, setOwnedUpgrades] = useState<OwnedUpgrade[]>([]);
   const [shopChoices, setShopChoices] = useState<ShopUpgrade[]>([]);
+  const [purchasedShopIds, setPurchasedShopIds] = useState<string[]>([]);
   const [shopMessage, setShopMessage] = useState<string | null>(null);
   const [shopTransitionMessage, setShopTransitionMessage] = useState<string | null>(null);
   const [betFeedback, setBetFeedback] = useState<string | null>(null);
@@ -927,8 +943,28 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
           setLastDrawnCard(parsed.recentCards[0].card);
         }
 
-        if (initialPhase === 'shop' || initialPhase === 'shopTransition') {
-          setShopChoices(generateShopChoices(storedRoundNumber));
+        const storedShopChoices =
+          parsed.currentShopChoices && Array.isArray(parsed.currentShopChoices)
+            ? parsed.currentShopChoices.map((choice) => ({
+                ...choice,
+                icon: choice.icon ?? templateByName.get(choice.name)?.icon ?? '🔹'
+              }))
+            : null;
+
+        if (storedShopChoices) {
+          setShopChoices(storedShopChoices);
+          setPurchasedShopIds(
+            parsed.purchasedShopIds && Array.isArray(parsed.purchasedShopIds)
+              ? parsed.purchasedShopIds
+              : []
+          );
+        } else {
+          setPurchasedShopIds([]);
+          if (initialPhase === 'shop' || initialPhase === 'shopTransition') {
+            setShopChoices(generateShopChoices(storedRoundNumber));
+          } else {
+            setShopChoices([]);
+          }
         }
       } else {
         const freshDeck = shuffleDeck(createDeck());
@@ -952,14 +988,6 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
     if (shopTransitionTimeoutRef.current) {
       clearTimeout(shopTransitionTimeoutRef.current);
       shopTransitionTimeoutRef.current = null;
-    }
-    if (gameOverTimeoutRef.current) {
-      clearTimeout(gameOverTimeoutRef.current);
-      gameOverTimeoutRef.current = null;
-    }
-    if (gameOverTimeoutRef.current) {
-      clearTimeout(gameOverTimeoutRef.current);
-      gameOverTimeoutRef.current = null;
     }
     if (gameOverTimeoutRef.current) {
       clearTimeout(gameOverTimeoutRef.current);
@@ -994,7 +1022,9 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
       selectedBetId,
       ownedUpgrades,
       recentCards,
-      targetAchieved
+      targetAchieved,
+      currentShopChoices: shopChoices,
+      purchasedShopIds
     };
 
     try {
@@ -1015,6 +1045,8 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
     roundScore,
     roundTarget,
     selectedBetId,
+    shopChoices,
+    purchasedShopIds,
     targetAchieved
   ]);
 
@@ -1318,10 +1350,6 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
       clearTimeout(gameOverTimeoutRef.current);
       gameOverTimeoutRef.current = null;
     }
-    if (gameOverTimeoutRef.current) {
-      clearTimeout(gameOverTimeoutRef.current);
-      gameOverTimeoutRef.current = null;
-    }
     deckRef.current = freshDeck;
     setDeck(freshDeck);
     clearFinalizeTimeout();
@@ -1343,6 +1371,7 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
     setLastDrawScore(0);
     setLastDrawnCard(null);
     setTargetAchieved(false);
+    setPurchasedShopIds([]);
     setGamePhase('gameplay');
   };
 
@@ -1372,6 +1401,7 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
     setLastDrawScore(0);
     setLastDrawnCard(null);
     setTargetAchieved(false);
+    setPurchasedShopIds([]);
     setGamePhase('menu');
     if (typeof window !== 'undefined') {
       localStorage.removeItem(STORAGE_KEY);
@@ -1527,6 +1557,7 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
     setFloatingScores([]);
     setDrawAnimations([]);
     setShopChoices(generateShopChoices(roundNumber));
+    setPurchasedShopIds([]);
     setShopMessage(finalMessage);
     setShopTransitionMessage(finalMessage);
     setGamePhase('shopTransition');
@@ -1573,6 +1604,7 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
     setBetFeedback(null);
     setLastDrawScore(0);
     setShopChoices([]);
+    setPurchasedShopIds([]);
     setShopMessage(null);
     setShopTransitionMessage(null);
     setTargetAchieved(false);
@@ -1595,6 +1627,7 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
     ]);
     setShopChoices((prev) => prev.filter((item) => item.id !== upgrade.id));
     setShopMessage(`Bought ${upgrade.name}.`);
+    setPurchasedShopIds((prev) => [...prev, upgrade.id]);
   };
 
   const resetToMenu = () => {
@@ -1910,9 +1943,9 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
           {settingsButton}
         </div>
       </div>
-      <div className={cn('flex-1 overflow-y-auto px-6 pb-12 lg:px-12', palette.panelRight)}>
+      <div className={cn('flex-1 overflow-y-auto px-6 pb-16 pt-14 lg:px-12', palette.panelRight)}>
         <h2 className={cn('mb-6 text-3xl font-bold', textPalette.accent)}>Upgrade Shop</h2>
-        <p className={cn('mb-10 max-w-3xl leading-relaxed', textPalette.secondary)}>
+        <p className={cn('mb-12 max-w-3xl leading-relaxed', textPalette.secondary)}>
           Grab the upgrades that fit your build, stack the bank, then jump back into the next round.
         </p>
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
