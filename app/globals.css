@@ -24,3 +24,74 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+@layer utilities {
+  @keyframes float-up {
+    0% {
+      transform: translate(-50%, -50%) scale(1);
+      opacity: 1;
+    }
+    100% {
+      transform: translate(-50%, -160%) scale(0.7);
+      opacity: 0;
+    }
+  }
+
+  @keyframes card-slide {
+    0% {
+      opacity: 0;
+      transform: translate3d(0, -12px, 0) rotate(-6deg);
+    }
+    20% {
+      opacity: 1;
+      transform: translate3d(0, -24px, 0) rotate(-4deg);
+    }
+    60% {
+      transform: translate3d(160px, -40px, 0) rotate(4deg);
+    }
+    100% {
+      opacity: 0;
+      transform: translate3d(260px, 36px, 0) rotate(10deg);
+    }
+  }
+
+  @keyframes recent-enter {
+    0% {
+      opacity: 0;
+      transform: translateX(-24px) scale(0.96);
+    }
+    100% {
+      opacity: 1;
+      transform: translateX(0) scale(1);
+    }
+  }
+
+  @keyframes recent-exit {
+    0% {
+      opacity: 1;
+      transform: translateX(0) scale(1);
+    }
+    100% {
+      opacity: 0;
+      transform: translateX(28px) scale(0.9);
+    }
+  }
+
+  .animate-float-up {
+    animation: float-up 2s ease-out forwards;
+  }
+
+  .animate-card-slide {
+    animation: card-slide 0.7s ease-in-out forwards;
+    will-change: transform, opacity;
+  }
+
+  .animate-recent-enter {
+    animation: recent-enter 0.35s ease-out;
+  }
+
+  .animate-recent-exit {
+    animation: recent-exit 0.3s ease-in forwards;
+    pointer-events: none;
+  }
+}
