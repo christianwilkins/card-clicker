@@ -2,20 +2,28 @@ export function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ');
 }
 
+const commaFormatter = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2
+});
+
 export function formatDisplayNumber(value: number): string {
-  if (value >= 1_000_000_000) {
-    return (value / 1_000_000_000).toFixed(2) + 'B';
+  if (!Number.isFinite(value)) {
+    return '0';
   }
-  if (value >= 1_000_000) {
-    return (value / 1_000_000).toFixed(2) + 'M';
+
+  const absValue = Math.abs(value);
+  if (absValue >= 100_000_000_000) {
+    return value.toExponential(2).replace('e', 'E');
   }
-  if (value >= 1_000) {
-    return (value / 1_000).toFixed(2) + 'K';
-  }
-  return value.toFixed(0);
+
+  return commaFormatter.format(value);
 }
 
 export function formatSignedDisplayNumber(value: number): string {
-  const sign = value >= 0 ? '+' : '';
-  return sign + formatDisplayNumber(Math.abs(value));
+  if (!Number.isFinite(value)) {
+    return '+0';
+  }
+  const sign = value >= 0 ? '+' : '-';
+  return `${sign}${formatDisplayNumber(Math.abs(value))}`;
 }

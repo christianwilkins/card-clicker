@@ -353,19 +353,22 @@ export const templateByName = new Map<string, ShopUpgrade>(
 );
 
 export function calculateRoundTarget(roundNumber: number, ownedUpgrades: OwnedUpgrade[]): number {
-  const baseMultiplier = 1.35;
-  const exponentialComponent = Math.pow(baseMultiplier, roundNumber);
-  const linearComponent = roundNumber * 15;
-  const base = 50 + linearComponent + exponentialComponent;
+  const baseTarget = 30;
+  const growthRate = 1.55;
+  const roundsCompleted = Math.max(0, roundNumber - 1);
 
-  const rarityBonus = ownedUpgrades.reduce((total, upgrade) => {
+  const exponentialTarget = baseTarget * Math.pow(growthRate, roundsCompleted);
+  const momentumBonus = roundsCompleted * 6;
+
+  const rarityScore = ownedUpgrades.reduce((total, upgrade) => {
     if (upgrade.rarity === 'legendary') return total + 6;
     if (upgrade.rarity === 'rare') return total + 3;
     if (upgrade.rarity === 'uncommon') return total + 1;
     return total;
   }, 0);
+  const rarityPressure = 1 + rarityScore * 0.03;
 
-  let target = Math.max(40, Math.floor(base + rarityBonus));
+  let target = Math.max(25, Math.floor((exponentialTarget + momentumBonus) * rarityPressure));
 
   const boss = getBossForRound(roundNumber);
   if (boss) {

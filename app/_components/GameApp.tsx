@@ -145,6 +145,8 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
   const [newProfileName, setNewProfileName] = useState('');
   const [comboStreak, setComboStreak] = useState(0);
   const [lastBetHit, setLastBetHit] = useState<boolean | null>(null);
+  const [lockedBetCategory, setLockedBetCategory] = useState<BetCategory | null>(null);
+  const [requireBetChangeAfterHit, setRequireBetChangeAfterHit] = useState(false);
   const [profileSelectionId, setProfileSelectionId] = useState<string | null>(null);
   const [profileMessage, setProfileMessage] = useState<string | null>(null);
   const profilesLoadedRef = useRef(false);
@@ -204,7 +206,9 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
     currentShopChoices: shopChoices,
     purchasedShopIds,
     activeDeckId,
-    deckModifiers
+    deckModifiers,
+    lockedBetCategory,
+    requireBetChangeAfterHit
   }), [
     deck,
     bank,
@@ -221,7 +225,9 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
     shopChoices,
     purchasedShopIds,
     activeDeckId,
-    deckModifiers
+    deckModifiers,
+    lockedBetCategory,
+    requireBetChangeAfterHit
   ]);
 
   const handleSaveProfile = useCallback(() => {
@@ -554,6 +560,8 @@ const resetGameState = () => {
   setShopTransitionMessage(null);
   setBetFeedback(null);
   setTargetAchieved(false);
+  setLockedBetCategory(null);
+  setRequireBetChangeAfterHit(false);
   setActiveDeckId(deckPresets[0].id);
   setDeckModifiers(DEFAULT_DECK_MODIFIERS);
   setIsDeckModalOpen(false);
@@ -621,6 +629,13 @@ const resetGameState = () => {
         const initialGamePhase = parsed.gamePhase ?? 'menu';
         setGamePhase(initialGamePhase);
         setSelectedBetId(parsed.selectedBetId ?? null);
+        const validCategories: BetCategory[] = ['Color', 'Suit', 'Rank Type', 'Value', 'Special'];
+        if (validCategories.includes(parsed.lockedBetCategory as BetCategory)) {
+          setLockedBetCategory(parsed.lockedBetCategory as BetCategory);
+        } else {
+          setLockedBetCategory(null);
+        }
+        setRequireBetChangeAfterHit(Boolean(parsed.requireBetChangeAfterHit));
 
         setRoundTarget(
           typeof parsed.roundTarget === 'number'
@@ -904,7 +919,11 @@ const resetGameState = () => {
   }, []);
 
   const roundProgress = roundTarget > 0 ? Math.min(roundScore / roundTarget, 1) : 0;
-  const drawButtonDisabled = roundOutcome === 'lost' || roundOutcome === 'won' || !selectedBet || drawsRemaining <= 0;
+  const betLocked = Boolean(
+    selectedBet && requireBetChangeAfterHit && lockedBetCategory === selectedBet.category
+  );
+  const drawButtonDisabled =
+    roundOutcome === 'lost' || roundOutcome === 'won' || !selectedBet || drawsRemaining <= 0 || betLocked;
   const leftoverConversionValue = drawsRemaining * GUARANTEED_DRAW_VALUE;
 
   const toggleMusic = () => {
@@ -1081,6 +1100,8 @@ const resetGameState = () => {
       setFloatingScores([]);
       setDrawAnimations([]);
       setRecentCards([]);
+      setLockedBetCategory(null);
+      setRequireBetChangeAfterHit(false);
       setOwnedUpgrades([]);
       setShopChoices([]);
       setPurchasedShopIds([]);
@@ -1134,6 +1155,22 @@ const resetGameState = () => {
     if (!selectedBet) {
       setBetFeedback('Select a bet before drawing.');
       return;
+    }
+    if (
+      requireBetChangeAfterHit &&
+      lockedBetCategory &&
+      selectedBet.category === lockedBetCategory
+    ) {
+      setBetFeedback('Pick a different bet category before drawing after a successful hit.');
+      return;
+    }
+    if (
+      requireBetChangeAfterHit &&
+      lockedBetCategory &&
+      selectedBet.category !== lockedBetCategory
+    ) {
+      setRequireBetChangeAfterHit(false);
+      setLockedBetCategory(null);
     }
     if (drawsRemaining <= 0) return;
 
@@ -1197,9 +1234,13 @@ const resetGameState = () => {
 
     // Update combo streak
     if (hit) {
-      setComboStreak(prev => prev + 1);
+      setComboStreak((prev) => prev + 1);
+      setLockedBetCategory(selectedBet.category);
+      setRequireBetChangeAfterHit(true);
     } else {
       setComboStreak(0);
+      setRequireBetChangeAfterHit(false);
+      setLockedBetCategory(null);
     }
     setLastBetHit(hit);
 
@@ -1245,7 +1286,7 @@ const resetGameState = () => {
     setLastDrawScore(drawScore);
     setBetFeedback(
       hit
-        ? `${selectedBet.label} hit for ${drawScoreLabel} points!`
+        ? `${selectedBet.label} hit for ${drawScoreLabel} points! Pick a different bet category before your next draw.`
         : `${selectedBet.label} missed · ${drawScoreLabel} points.`
     );
 
@@ -1303,6 +1344,8 @@ const resetGameState = () => {
       } else {
         setRoundOutcome('lost');
         setTargetAchieved(false);
+        setRequireBetChangeAfterHit(false);
+        setLockedBetCategory(null);
         if (gameOverTimeoutRef.current) {
           clearTimeout(gameOverTimeoutRef.current);
         }
@@ -1360,6 +1403,8 @@ const resetGameState = () => {
     setDrawsRemaining(0);
     setRoundOutcome('won');
     setTargetAchieved(false);
+    setRequireBetChangeAfterHit(false);
+    setLockedBetCategory(null);
     setFloatingScores([]);
     setDrawAnimations([]);
     setShopChoices(generateShopChoices(roundNumber, ownedUpgrades));
@@ -1408,6 +1453,8 @@ const resetGameState = () => {
     setDrawAnimations([]);
     setRecentCards([]);
     setBetFeedback(null);
+    setLockedBetCategory(null);
+    setRequireBetChangeAfterHit(false);
     setLastDrawScore(0);
     setShopChoices([]);
     setPurchasedShopIds([]);
@@ -1670,6 +1717,7 @@ const resetGameState = () => {
             </div>
 
             <button
+              type="button"
               onClick={handleDraw}
               disabled={drawButtonDisabled}
               className={cn(
@@ -1678,7 +1726,11 @@ const resetGameState = () => {
                 'mt-4 w-full'
               )}
             >
-              {selectedBet ? `Draw with ${selectedBet.label}` : 'Select a bet to draw'}
+              {betLocked
+                ? 'Pick a different bet category before drawing'
+                : selectedBet
+                  ? `Draw with ${selectedBet.label}`
+                  : 'Select a bet to draw'}
             </button>
             {betFeedback && (
               <div className={cn('mt-2 text-sm', textPalette.secondary)}>{betFeedback}</div>
@@ -1833,60 +1885,93 @@ const resetGameState = () => {
         )}
 
         <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
-          {Object.entries(betsByCategory).map(([category, options]) => (
-            <div key={category} className={cn('rounded-2xl p-5', palette.surfaceCard)}>
-              <div className={cn('mb-4 text-sm font-semibold uppercase tracking-[0.3em]', textPalette.primary)}>
-                {category} Bets
-              </div>
-              <div className="space-y-3">
-                {options.map((option) => {
-                  const isSelected = selectedBetId === option.id;
-                  const bonus = betBonusMap.get(option.id) ?? 0;
-                  const totalMultiplier = option.baseMultiplier + bonus;
-                  const riskClass =
-                    option.risk === 'extreme'
-                      ? tagPalette.extreme
-                      : option.risk === 'high'
-                        ? tagPalette.high
-                        : option.risk === 'medium'
-                          ? tagPalette.medium
-                          : tagPalette.low;
-
-                  return (
-                    <button
-                      key={option.id}
-                      onClick={() => {
-                        setSelectedBetId(option.id);
-                        setBetFeedback(null);
-                      }}
+          {Object.entries(betsByCategory).map(([categoryKey, options]) => {
+            const category = categoryKey as BetCategory;
+            const categoryLocked = requireBetChangeAfterHit && lockedBetCategory === category;
+            return (
+              <div key={category} className={cn('rounded-2xl p-5', palette.surfaceCard)}>
+                <div className="mb-4 flex items-center justify-between">
+                  <div className={cn('text-sm font-semibold uppercase tracking-[0.3em]', textPalette.primary)}>
+                    {category} Bets
+                  </div>
+                  {categoryLocked && (
+                    <div
                       className={cn(
-                        'w-full rounded-2xl p-4 text-left transition-all duration-200',
-                        betPalette.card,
-                        isSelected && betPalette.active
+                        'rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.25em]',
+                        textPalette.secondary,
+                        theme === 'dark' ? 'bg-slate-900/60' : 'bg-slate-200'
                       )}
                     >
-                      <div className="mb-2 flex items-center justify-between">
-                        <span className={cn('text-sm font-semibold', textPalette.primary)}>
-                          {option.label}
-                        </span>
-                        <span className={riskClass}>
-                          {totalMultiplier.toFixed(2)}× · {option.risk.toUpperCase()}
-                        </span>
-                      </div>
-                      <div className={cn('text-xs leading-snug', textPalette.secondary)}>
-                        {option.description}
-                      </div>
-                      {bonus > 0 && (
-                        <div className={cn('mt-2 text-[11px] uppercase tracking-[0.25em]', textPalette.positive)}>
-                          +{bonus.toFixed(2)}× relic bonus
+                      Locked
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-3">
+                  {options.map((option) => {
+                    const isSelected = selectedBetId === option.id;
+                    const bonus = betBonusMap.get(option.id) ?? 0;
+                    const totalMultiplier = option.baseMultiplier + bonus;
+                    const isLocked =
+                      requireBetChangeAfterHit && lockedBetCategory === option.category;
+                    const riskClass =
+                      option.risk === 'extreme'
+                        ? tagPalette.extreme
+                        : option.risk === 'high'
+                          ? tagPalette.high
+                          : option.risk === 'medium'
+                            ? tagPalette.medium
+                            : tagPalette.low;
+
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        disabled={isLocked}
+                        onClick={() => {
+                          if (isLocked) {
+                            setBetFeedback('Pick a different bet category before drawing after a successful hit.');
+                            return;
+                          }
+                          setSelectedBetId(option.id);
+                          if (!requireBetChangeAfterHit) {
+                            setBetFeedback(null);
+                          }
+                        }}
+                        className={cn(
+                          'w-full rounded-2xl p-4 text-left transition-all duration-200',
+                          betPalette.card,
+                          isSelected && betPalette.active,
+                          isLocked && 'cursor-not-allowed opacity-60'
+                        )}
+                      >
+                        <div className="mb-2 flex items-center justify-between">
+                          <span className={cn('text-sm font-semibold', textPalette.primary)}>
+                            {option.label}
+                          </span>
+                          <span className={riskClass}>
+                            {totalMultiplier.toFixed(2)}× · {option.risk.toUpperCase()}
+                          </span>
                         </div>
-                      )}
-                    </button>
-                  );
-                })}
+                        <div className={cn('text-xs leading-snug', textPalette.secondary)}>
+                          {option.description}
+                        </div>
+                        {bonus > 0 && (
+                          <div className={cn('mt-2 text-[11px] uppercase tracking-[0.25em]', textPalette.positive)}>
+                            +{bonus.toFixed(2)}× relic bonus
+                          </div>
+                        )}
+                        {isLocked && (
+                          <div className={cn('mt-2 text-[11px] uppercase tracking-[0.25em]', textPalette.secondary)}>
+                            Locked after hit
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>

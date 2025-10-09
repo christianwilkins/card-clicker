@@ -124,6 +124,8 @@ export interface StoredGameState {
   purchasedShopIds: string[];
   activeDeckId: string;
   deckModifiers: DeckModifier;
+  lockedBetCategory?: BetCategory | null;
+  requireBetChangeAfterHit?: boolean;
   comboStreak?: number;
   lastBetHit?: boolean;
   transformationsCompleted?: string[];
