@@ -106,3 +106,25 @@ export interface DrawAnimation {
   id: string;
   card: CardType;
 }
+
+export interface StoredGameState {
+  deck: CardType[];
+  bank: number;
+  roundNumber: number;
+  roundScore: number;
+  roundTarget: number;
+  drawsRemaining: number;
+  roundOutcome: RoundOutcome;
+  gamePhase: GamePhase;
+  selectedBetId: string | null;
+  ownedUpgrades: OwnedUpgrade[];
+  recentCards: RecentCardEntry[];
+  targetAchieved: boolean;
+  currentShopChoices: ShopUpgrade[];
+  purchasedShopIds: string[];
+  activeDeckId: string;
+  deckModifiers: DeckModifier;
+  comboStreak?: number;
+  lastBetHit?: boolean;
+  transformationsCompleted?: string[];
+}

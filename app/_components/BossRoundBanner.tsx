@@ -1,12 +1,13 @@
 'use client';
 
+import type { ThemePalette } from './game/theme';
 import { BossModifier } from './types';
 import { cn } from './utils';
 
 interface BossRoundBannerProps {
   boss: BossModifier;
-  palette: any;
-  textPalette: any;
+  palette: ThemePalette;
+  textPalette: ThemePalette['text'];
 }
 
 export default function BossRoundBanner({ boss, palette, textPalette }: BossRoundBannerProps) {

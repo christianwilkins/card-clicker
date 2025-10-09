@@ -9,96 +9,67 @@ import { usePathname, useRouter } from 'next/navigation';
 
 import Card from './CardComponent';
 import RecentCardItem from './RecentCardItemComponent';
-import { formatDisplayNumber, formatSignedDisplayNumber } from './utils';
-import type { CardType, Rank, Suit, RecentCardStatus } from './types';
+import { cn, formatDisplayNumber, formatSignedDisplayNumber } from './utils';
+import type {
+  BetCategory,
+  BetOption,
+  CardType,
+  DeckModifier,
+  DeckPreset,
+  DrawAnimation,
+  FloatingScore,
+  GamePhase,
+  OwnedUpgrade,
+  PlayerProfile,
+  RecentCardEntry,
+  RecentCardStatus,
+  RoundOutcome,
+  ShopUpgrade,
+  StoredGameState,
+  ThemeMode,
+  UpgradeEffect
+} from './types';
 
-type GamePhase = 'menu' | 'gameplay' | 'shopTransition' | 'shop' | 'gameOver';
-type RoundOutcome = 'active' | 'won' | 'lost';
-type Rarity = 'common' | 'uncommon' | 'rare' | 'legendary';
-type BetCategory = 'Color' | 'Suit' | 'Rank Type' | 'Value' | 'Special';
-type ThemeMode = 'light' | 'dark';
+import {
+  ACTIVE_PROFILE_KEY,
+  BASE_DRAWS,
+  BASE_INTEREST,
+  DEFAULT_DECK_MODIFIERS,
+  GUARANTEED_DRAW_VALUE,
+  MAX_RECENT_CARDS,
+  PROFILES_KEY,
+  THEME_STORAGE_KEY,
+  getProfileStorageKey
+} from './game/constants';
+import { betOptionMap, betOptions } from './game/bets';
+import { getRankValue, normalizeStoredCard, shuffleDeck } from './game/cards';
+import {
+  buildDeckForPreset,
+  deckPresets,
+  getDeckPresetById,
+  mergeDeckModifiers
+} from './game/decks';
+import { getBossForRound } from './game/bosses';
+import {
+  calculateRoundTarget,
+  generateShopChoices,
+  getBetBonusMap,
+  getExtraDraws,
+  getFlatBonus,
+  getGlobalMultiplier,
+  getInterestBonus,
+  templateByName
+} from './game/upgrades';
+import { getDisabledButtonClasses, getRarityStyles, getThemePalette } from './game/theme';
+import { SettingsModal } from './game/components/SettingsModal';
+import { DeckSelectionModal } from './game/components/DeckSelectionModal';
+import { GameOverOverlay } from './game/components/GameOverOverlay';
+import { ShopTransitionOverlay } from './game/components/ShopTransitionOverlay';
+import { MenuScreen } from './game/components/MenuScreen';
+import { ShopView } from './game/components/ShopView';
 
 interface GameAppProps {
   initialPhase?: GamePhase;
-}
-
-interface FloatingScore {
-  id: string;
-  value: number;
-  hit: boolean;
-}
-
-interface DrawAnimation {
-  id: string;
-  card: CardType;
-}
-
-interface RecentCardEntry {
-  id: string;
-  card: CardType;
-  status: RecentCardStatus;
-  betId: string;
-  betLabel: string;
-  betHit: boolean;
-  gain: number;
-}
-
-interface StoredGameState {
-  deck: CardType[];
-  bank: number;
-  roundNumber: number;
-  roundScore: number;
-  roundTarget: number;
-  drawsRemaining: number;
-  roundOutcome: RoundOutcome;
-  gamePhase: GamePhase;
-  selectedBetId: string | null;
-  ownedUpgrades: OwnedUpgrade[];
-  recentCards: RecentCardEntry[];
-  targetAchieved: boolean;
-  currentShopChoices: ShopUpgrade[];
-  purchasedShopIds: string[];
-  activeDeckId: string;
-  deckModifiers: DeckModifier;
-  comboStreak?: number; // For combo counter items
-  lastBetHit?: boolean; // For conditional items that trigger on miss/hit
-  transformationsCompleted?: string[]; // Track which transformations are active
-}
-
-interface BetOption {
-  id: string;
-  category: BetCategory;
-  label: string;
-  description: string;
-  baseMultiplier: number;
-  risk: 'low' | 'medium' | 'high' | 'extreme';
-  check: (card: CardType) => boolean;
-}
-
-type UpgradeEffect =
-  | { type: 'extraDraws'; value: number }
-  | { type: 'betMultiplier'; betId: string; value: number }
-  | { type: 'flatBonus'; value: number }
-  | { type: 'interestRate'; value: number }
-  | { type: 'synergyMultiplier'; tag: string; value: number } // Bonus per other item with matching tag
-  | { type: 'transformation'; set: string; piece: number } // Collect 3 for transformation
-  | { type: 'conditionalBonus'; condition: 'onHit' | 'onMiss' | 'streak'; multiplier?: number; flatBonus?: number; bankReward?: number; bankPenalty?: number }
-  | { type: 'comboCounter'; value: number; decay: 'onMiss' | 'perRound' } // Stacking bonus that resets
-  | { type: 'globalMultiplier'; value: number }; // Applies to all bets
-
-interface ShopUpgrade {
-  id: string;
-  name: string;
-  description: string;
-  rarity: Rarity;
-  cost: number;
-  icon: string;
-  effects: UpgradeEffect[];
-  tags?: string[]; // For synergy calculations
-}
-
-interface OwnedUpgrade extends ShopUpgrade {
-  purchasedAtRound: number;
 }
 
 interface AudioVoice {
@@ -108,1077 +79,6 @@ interface AudioVoice {
   gain: GainNode;
   pitchDepth: GainNode;
   ampDepth: GainNode;
-}
-
-interface DeckModifier {
-  extraDraws?: number;
-  flatBonus?: number;
-  interestBonus?: number;
-  startingBank?: number;
-}
-
-interface DeckPreset {
-  id: string;
-  name: string;
-  description: string;
-  modifiers: DeckModifier;
-  buildDeck: () => CardType[];
-  requirement?: { type: 'bestRound'; value: number; label: string };
-}
-
-interface PlayerProfile {
-  id: string;
-  name: string;
-  unlockedDecks: string[];
-  bestRound: number;
-}
-
-interface BossModifier {
-  id: string;
-  name: string;
-  description: string;
-  targetMultiplier: number; // Multiplies the round target
-  effect?: {
-    type: 'disableBets' | 'reduceFlatBonus' | 'reduceMultipliers' | 'bankDrain' | 'noInterest';
-    value?: number;
-    betIds?: string[];
-  };
-}
-
-const bossModifiers: BossModifier[] = [
-  {
-    id: 'boss-purist',
-    name: 'The Purist',
-    description: 'Only exact suit and special bets available. Color bets disabled.',
-    targetMultiplier: 1.3,
-    effect: {
-      type: 'disableBets',
-      betIds: ['color-red', 'color-black', 'rank-number', 'rank-face', 'value-high', 'value-low']
-    }
-  },
-  {
-    id: 'boss-accountant',
-    name: 'The Accountant',
-    description: 'Interest is disabled. Flat bonuses reduced by 50%.',
-    targetMultiplier: 1.2,
-    effect: {
-      type: 'noInterest'
-    }
-  },
-  {
-    id: 'boss-multiplier-curse',
-    name: 'The Dampener',
-    description: 'All bet multipliers reduced by 50%.',
-    targetMultiplier: 1.4,
-    effect: {
-      type: 'reduceMultipliers',
-      value: 0.5
-    }
-  },
-  {
-    id: 'boss-drain',
-    name: 'The Tax Collector',
-    description: 'Lose 8 bank per missed bet.',
-    targetMultiplier: 1.25,
-    effect: {
-      type: 'bankDrain',
-      value: 8
-    }
-  },
-  {
-    id: 'boss-flat-curse',
-    name: 'The Nullifier',
-    description: 'Flat bonus per draw reduced to 0.',
-    targetMultiplier: 1.3,
-    effect: {
-      type: 'reduceFlatBonus',
-      value: 0
-    }
-  }
-];
-
-const suits: Suit[] = ['♠', '♥', '♦', '♣'];
-const ranks: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-const STORAGE_KEY = 'card-clicker-rogue-v1';
-const THEME_STORAGE_KEY = 'card-clicker-theme';
-const PROFILES_KEY = 'card-clicker-profiles';
-const ACTIVE_PROFILE_KEY = 'card-clicker-active-profile';
-const BASE_DRAWS = 5;
-const BASE_INTEREST = 0.05;
-const GUARANTEED_DRAW_VALUE = 12;
-const MAX_RECENT_CARDS = 6;
-
-function createCard(suit: Suit, rank: Rank, variant?: number): CardType {
-  return {
-    suit,
-    rank,
-    id: variant !== undefined ? `${rank}${suit}-${variant}` : `${rank}${suit}`
-  };
-}
-
-function createJokerCard(color: 'red' | 'black', id?: string): CardType {
-  return {
-    suit: 'Joker',
-    rank: 'Joker',
-    id: id ?? `joker-${color}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    isJoker: true,
-    jokerColor: color
-  };
-}
-
-function normalizeStoredCard(card: CardType): CardType {
-  if (card.rank === 'Joker' || card.suit === 'Joker' || card.isJoker) {
-    return {
-      ...card,
-      suit: 'Joker',
-      rank: 'Joker',
-      isJoker: true,
-      jokerColor: card.jokerColor ?? 'black'
-    };
-  }
-  return {
-    ...card,
-    isJoker: false
-  };
-}
-
-function createStandardDeck(): CardType[] {
-  const deck: CardType[] = [];
-  for (const suit of suits) {
-    for (const rank of ranks) {
-      deck.push(createCard(suit, rank));
-    }
-  }
-  deck.push(createJokerCard('red', 'joker-red'));
-  deck.push(createJokerCard('black', 'joker-black'));
-  return deck;
-}
-
-function createHighRollerDeck(): CardType[] {
-  const deck: CardType[] = [];
-  const premiumRanks: Rank[] = ['7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
-  for (const suit of suits) {
-    for (const rank of premiumRanks) {
-      deck.push(createCard(suit, rank));
-    }
-  }
-
-  let variant = 0;
-  const bonusRanks: Rank[] = ['J', 'Q', 'K', 'A'];
-  const bonusSuits: Suit[] = ['♠', '♥'];
-  for (const suit of bonusSuits) {
-    for (const rank of bonusRanks) {
-      deck.push(createCard(suit, rank, variant++));
-    }
-  }
-
-  deck.push(createJokerCard('red', 'joker-red-high'));
-  deck.push(createJokerCard('black', 'joker-black-high'));
-  deck.push(createJokerCard('black', 'joker-black-high-2'));
-  return deck;
-}
-
-function createProbabilityBenderDeck(): CardType[] {
-  const deck = createStandardDeck();
-  let variant = 0;
-  const lowRanks: Rank[] = ['2', '3', '4', '5', '6'];
-  const redSuits: Suit[] = ['♥', '♦'];
-  for (const suit of redSuits) {
-    for (const rank of lowRanks) {
-      deck.push(createCard(suit, rank, variant++));
-    }
-  }
-
-  const momentumRanks: Rank[] = ['9', '10', 'J'];
-  const blackSuits: Suit[] = ['♠', '♣'];
-  for (const suit of blackSuits) {
-    for (const rank of momentumRanks) {
-      deck.push(createCard(suit, rank, variant++));
-    }
-  }
-
-  deck.push(createJokerCard('red', 'joker-red-pb'));
-  deck.push(createJokerCard('red', 'joker-red-pb-2'));
-  deck.push(createJokerCard('black', 'joker-black-pb'));
-  return deck;
-}
-
-function createMinimalistDeck(): CardType[] {
-  const deck: CardType[] = [];
-  const premiumRanks: Rank[] = ['9', '10', 'J', 'Q', 'K', 'A'];
-  for (const suit of suits) {
-    for (const rank of premiumRanks) {
-      deck.push(createCard(suit, rank));
-    }
-  }
-  deck.push(createJokerCard('red', 'joker-red-mini'));
-  deck.push(createJokerCard('black', 'joker-black-mini'));
-  return deck;
-}
-
-function createChaosDeck(): CardType[] {
-  const deck: CardType[] = [];
-  for (const suit of suits) {
-    for (const rank of ranks) {
-      deck.push(createCard(suit, rank));
-      deck.push(createCard(suit, rank, 1));
-    }
-  }
-  for (let i = 0; i < 6; i++) {
-    deck.push(createJokerCard(i % 2 === 0 ? 'red' : 'black', `joker-chaos-${i}`));
-  }
-  return deck;
-}
-
-function createBankerDeck(): CardType[] {
-  const deck = createStandardDeck();
-  return deck;
-}
-
-const deckPresets: DeckPreset[] = [
-  {
-    id: 'balanced',
-    name: 'Balanced Deck',
-    description: 'Classic 54-card spread. No modifiers—pure odds.',
-    modifiers: {},
-    buildDeck: createStandardDeck
-  },
-  {
-    id: 'high-roller',
-    name: 'High Roller',
-    description:
-      'Lean stack stacked with face cards and extra jokers to chase big multipliers.',
-    modifiers: { startingBank: 120, flatBonus: 4 },
-    buildDeck: createHighRollerDeck,
-    requirement: { type: 'bestRound', value: 5, label: 'Reach Round 5' }
-  },
-  {
-    id: 'probability-bender',
-    name: 'Probability Bender',
-    description:
-      'Weighted draws favor streaky reds, boosted lows, and a surplus of wild cards.',
-    modifiers: { extraDraws: 1, interestBonus: 0.02 },
-    buildDeck: createProbabilityBenderDeck,
-    requirement: { type: 'bestRound', value: 10, label: 'Reach Round 10' }
-  },
-  {
-    id: 'minimalist',
-    name: 'Minimalist Deck',
-    description: 'Only 26 premium cards (9+). Start with +2 draws and higher multipliers.',
-    modifiers: { extraDraws: 2, flatBonus: 6 },
-    buildDeck: createMinimalistDeck,
-    requirement: { type: 'bestRound', value: 7, label: 'Reach Round 7' }
-  },
-  {
-    id: 'chaos',
-    name: 'Chaos Deck',
-    description: '110 cards with 6 Jokers. Complete randomness, +1 draw. High variance chaos.',
-    modifiers: { extraDraws: 1, flatBonus: 3 },
-    buildDeck: createChaosDeck,
-    requirement: { type: 'bestRound', value: 12, label: 'Reach Round 12' }
-  },
-  {
-    id: 'banker',
-    name: 'Banker\'s Deck',
-    description: 'Start with 200 bank and +5% interest, but -1 draw. Play the long game.',
-    modifiers: { startingBank: 200, interestBonus: 0.05, extraDraws: -1 },
-    buildDeck: createBankerDeck,
-    requirement: { type: 'bestRound', value: 15, label: 'Reach Round 15' }
-  }
-];
-
-const deckPresetMap = new Map<string, DeckPreset>(deckPresets.map((preset) => [preset.id, preset]));
-
-function getDeckPresetById(deckId: string): DeckPreset {
-  return deckPresetMap.get(deckId) ?? deckPresets[0];
-}
-
-function buildDeckForPreset(deckId: string): CardType[] {
-  const preset = getDeckPresetById(deckId);
-  return preset.buildDeck();
-}
-
-function shuffleDeck(deck: CardType[]): CardType[] {
-  const shuffled = [...deck];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-  return shuffled;
-}
-
-function getRankValue(rank: Rank): number {
-  if (rank === 'A') return 11;
-  if (rank === 'J') return 12;
-  if (rank === 'Q') return 13;
-  if (rank === 'K') return 14;
-  return parseInt(rank);
-}
-
-const betOptions: BetOption[] = [
-  {
-    id: 'color-red',
-    category: 'Color',
-    label: 'Red Cards',
-    description: 'Hearts or Diamonds',
-    baseMultiplier: 1.7,
-    risk: 'low',
-    check: (card) => card.suit === '♥' || card.suit === '♦'
-  },
-  {
-    id: 'color-black',
-    category: 'Color',
-    label: 'Black Cards',
-    description: 'Spades or Clubs',
-    baseMultiplier: 1.7,
-    risk: 'low',
-    check: (card) => card.suit === '♠' || card.suit === '♣'
-  },
-  {
-    id: 'suit-spades',
-    category: 'Suit',
-    label: 'Exact Suit · ♠',
-    description: 'Bet on spades specifically',
-    baseMultiplier: 3.2,
-    risk: 'high',
-    check: (card) => card.suit === '♠'
-  },
-  {
-    id: 'suit-hearts',
-    category: 'Suit',
-    label: 'Exact Suit · ♥',
-    description: 'Bet on hearts specifically',
-    baseMultiplier: 3.0,
-    risk: 'high',
-    check: (card) => card.suit === '♥'
-  },
-  {
-    id: 'suit-diamonds',
-    category: 'Suit',
-    label: 'Exact Suit · ♦',
-    description: 'Bet on diamonds specifically',
-    baseMultiplier: 3.0,
-    risk: 'high',
-    check: (card) => card.suit === '♦'
-  },
-  {
-    id: 'suit-clubs',
-    category: 'Suit',
-    label: 'Exact Suit · ♣',
-    description: 'Bet on clubs specifically',
-    baseMultiplier: 3.2,
-    risk: 'high',
-    check: (card) => card.suit === '♣'
-  },
-  {
-    id: 'rank-face',
-    category: 'Rank Type',
-    label: 'Face Card',
-    description: 'J, Q, or K',
-    baseMultiplier: 2.2,
-    risk: 'medium',
-    check: (card) => card.rank === 'J' || card.rank === 'Q' || card.rank === 'K'
-  },
-  {
-    id: 'rank-number',
-    category: 'Rank Type',
-    label: 'Number Card',
-    description: 'Ranks 2 through 10',
-    baseMultiplier: 1.5,
-    risk: 'low',
-    check: (card) => !['A', 'J', 'Q', 'K', 'Joker'].includes(card.rank)
-  },
-  {
-    id: 'value-high',
-    category: 'Value',
-    label: 'High Value (9+)',
-    description: 'Rank 9 or above',
-    baseMultiplier: 1.9,
-    risk: 'medium',
-    check: (card) => {
-      if (card.rank === 'Joker') return true;
-      return getRankValue(card.rank) >= 9;
-    }
-  },
-  {
-    id: 'value-low',
-    category: 'Value',
-    label: 'Low Value (2-6)',
-    description: 'Rank between 2 and 6',
-    baseMultiplier: 2.1,
-    risk: 'medium',
-    check: (card) => {
-      if (card.rank === 'Joker') return false;
-      const value = getRankValue(card.rank);
-      return value >= 2 && value <= 6;
-    }
-  },
-  {
-    id: 'special-ace',
-    category: 'Special',
-    label: 'Ace!',
-    description: 'Land exactly on an Ace',
-    baseMultiplier: 4.5,
-    risk: 'high',
-    check: (card) => card.rank === 'A'
-  },
-  {
-    id: 'special-joker',
-    category: 'Special',
-    label: 'Joker',
-    description: 'Hit either Joker',
-    baseMultiplier: 7.0,
-    risk: 'extreme',
-    check: (card) => card.rank === 'Joker'
-  }
-];
-
-const betOptionMap = new Map(betOptions.map((bet) => [bet.id, bet]));
-
-const upgradeTemplates: ShopUpgrade[] = [
-  {
-    id: 'flat-bonus-2',
-    name: 'Scuffed Token',
-    description: 'Every draw awards +2 bonus points.',
-    rarity: 'common',
-    cost: 60,
-    icon: '🪙',
-    effects: [{ type: 'flatBonus', value: 2 }]
-  },
-  {
-    id: 'bet-bonus-red-small',
-    name: 'Tinted Lens',
-    description: 'Red Cards bet gains +0.2× multiplier.',
-    rarity: 'common',
-    cost: 65,
-    icon: '🔍',
-    effects: [{ type: 'betMultiplier', betId: 'color-red', value: 0.2 }],
-    tags: ['red-synergy']
-  },
-  {
-    id: 'interest-boost-0',
-    name: 'Savings Charm',
-    description: 'Increase bank interest by +2%.',
-    rarity: 'common',
-    cost: 70,
-    icon: '🧿',
-    effects: [{ type: 'interestRate', value: 0.02 }],
-    tags: ['interest-synergy']
-  },
-  {
-    id: 'extra-draw-1',
-    name: 'Lucky Glove',
-    description: 'Gain +1 draw every round.',
-    rarity: 'uncommon',
-    cost: 120,
-    icon: '🧤',
-    effects: [{ type: 'extraDraws', value: 1 }]
-  },
-  {
-    id: 'extra-draw-2',
-    name: 'Chrono Deck',
-    description: 'Gain +2 draws every round.',
-    rarity: 'rare',
-    cost: 240,
-    icon: '⏳',
-    effects: [{ type: 'extraDraws', value: 2 }]
-  },
-  {
-    id: 'bet-bonus-black',
-    name: 'Shadow Edge',
-    description: 'Black Cards bet gains +0.6× multiplier.',
-    rarity: 'rare',
-    cost: 190,
-    icon: '🗡️',
-    effects: [{ type: 'betMultiplier', betId: 'color-black', value: 0.6 }],
-    tags: ['black-synergy']
-  },
-  {
-    id: 'bet-bonus-face',
-    name: 'Court Favor',
-    description: 'Face Card bet gains +0.8× multiplier.',
-    rarity: 'rare',
-    cost: 210,
-    icon: '👑',
-    effects: [{ type: 'betMultiplier', betId: 'rank-face', value: 0.8 }]
-  },
-  {
-    id: 'bet-bonus-joker',
-    name: 'Wild Antenna',
-    description: 'Joker bet gains +1.5× multiplier.',
-    rarity: 'legendary',
-    cost: 360,
-    icon: '🃏',
-    effects: [{ type: 'betMultiplier', betId: 'special-joker', value: 1.5 }]
-  },
-  {
-    id: 'flat-bonus-8',
-    name: 'Lucky Coin',
-    description: 'Every draw awards +8 bonus points.',
-    rarity: 'uncommon',
-    cost: 140,
-    icon: '💠',
-    effects: [{ type: 'flatBonus', value: 8 }]
-  },
-  {
-    id: 'flat-bonus-15',
-    name: 'Golden Effigy',
-    description: 'Every draw awards +15 bonus points.',
-    rarity: 'legendary',
-    cost: 320,
-    icon: '🏆',
-    effects: [{ type: 'flatBonus', value: 15 }]
-  },
-  {
-    id: 'bet-bonus-red',
-    name: 'Ruby Lens',
-    description: 'Red Cards bet gains +0.4× multiplier.',
-    rarity: 'uncommon',
-    cost: 150,
-    icon: '💎',
-    effects: [{ type: 'betMultiplier', betId: 'color-red', value: 0.4 }],
-    tags: ['red-synergy']
-  },
-  {
-    id: 'bet-bonus-high',
-    name: 'High Stakes Loop',
-    description: 'High Value bet gains +0.5× multiplier.',
-    rarity: 'uncommon',
-    cost: 170,
-    icon: '🎯',
-    effects: [{ type: 'betMultiplier', betId: 'value-high', value: 0.5 }]
-  },
-  {
-    id: 'extra-draw-legendary',
-    name: 'Temporal Crown',
-    description: 'Gain +3 draws every round.',
-    rarity: 'legendary',
-    cost: 440,
-    icon: '🕰️',
-    effects: [{ type: 'extraDraws', value: 3 }]
-  },
-  {
-    id: 'flat-bonus-4',
-    name: 'Warm-Up Routine',
-    description: 'Every draw awards +4 bonus points.',
-    rarity: 'common',
-    cost: 80,
-    icon: '🔥',
-    effects: [{ type: 'flatBonus', value: 4 }]
-  },
-  {
-    id: 'bet-bonus-number',
-    name: 'Dealer’s Whisper',
-    description: 'Number Card bet gains +0.35× multiplier.',
-    rarity: 'common',
-    cost: 110,
-    icon: '🎴',
-    effects: [{ type: 'betMultiplier', betId: 'rank-number', value: 0.35 }]
-  },
-  {
-    id: 'interest-boost-1',
-    name: 'Compound Prism',
-    description: 'Increase bank interest by +3%.',
-    rarity: 'uncommon',
-    cost: 160,
-    icon: '🔮',
-    effects: [{ type: 'interestRate', value: 0.03 }],
-    tags: ['interest-synergy']
-  },
-  {
-    id: 'interest-boost-2',
-    name: 'Vault Engine',
-    description: 'Increase bank interest by +5%.',
-    rarity: 'rare',
-    cost: 240,
-    icon: '🏦',
-    effects: [{ type: 'interestRate', value: 0.05 }],
-    tags: ['interest-synergy']
-  },
-  {
-    id: 'interest-boost-legendary',
-    name: 'Time Dividend',
-    description: 'Increase bank interest by +8%.',
-    rarity: 'legendary',
-    cost: 360,
-    icon: '⏱️',
-    effects: [{ type: 'interestRate', value: 0.08 }],
-    tags: ['interest-synergy']
-  },
-  // SYNERGY ITEMS - Get bonuses for collecting related items
-  {
-    id: 'synergy-red-hunter',
-    name: 'Crimson Cascade',
-    description: 'Red bet gains +0.15× for each other red-focused item you own.',
-    rarity: 'rare',
-    cost: 210,
-    icon: '🌊',
-    effects: [
-      { type: 'betMultiplier', betId: 'color-red', value: 0.3 },
-      { type: 'synergyMultiplier', tag: 'red-synergy', value: 0.15 }
-    ],
-    tags: ['red-synergy']
-  },
-  {
-    id: 'synergy-black-hunter',
-    name: 'Obsidian Chain',
-    description: 'Black bet gains +0.15× for each other black-focused item you own.',
-    rarity: 'rare',
-    cost: 210,
-    icon: '⛓️',
-    effects: [
-      { type: 'betMultiplier', betId: 'color-black', value: 0.3 },
-      { type: 'synergyMultiplier', tag: 'black-synergy', value: 0.15 }
-    ],
-    tags: ['black-synergy']
-  },
-  {
-    id: 'synergy-interest-compound',
-    name: 'Exponential Vault',
-    description: 'Gain +1% interest for each other interest item owned.',
-    rarity: 'uncommon',
-    cost: 140,
-    icon: '📈',
-    effects: [
-      { type: 'interestRate', value: 0.02 },
-      { type: 'synergyMultiplier', tag: 'interest-synergy', value: 0.01 }
-    ],
-    tags: ['interest-synergy']
-  },
-  // TRANSFORMATION ITEMS - Collect 3 to transform
-  {
-    id: 'transform-gambler-1',
-    name: 'Gambler\'s Die',
-    description: '[Gambler 1/3] Extreme bets (Joker, Ace) gain +0.5× multiplier. Transform: +2.0× on extremes.',
-    rarity: 'rare',
-    cost: 180,
-    icon: '🎲',
-    effects: [
-      { type: 'betMultiplier', betId: 'special-joker', value: 0.5 },
-      { type: 'betMultiplier', betId: 'special-ace', value: 0.5 },
-      { type: 'transformation', set: 'gambler', piece: 1 }
-    ]
-  },
-  {
-    id: 'transform-gambler-2',
-    name: 'Gambler\'s Coin',
-    description: '[Gambler 2/3] High Value bets gain +0.4× multiplier. Transform: +2.0× on extremes.',
-    rarity: 'rare',
-    cost: 180,
-    icon: '🪙',
-    effects: [
-      { type: 'betMultiplier', betId: 'value-high', value: 0.4 },
-      { type: 'transformation', set: 'gambler', piece: 2 }
-    ]
-  },
-  {
-    id: 'transform-gambler-3',
-    name: 'Gambler\'s Charm',
-    description: '[Gambler 3/3] Gain +1 draw. Transform: +2.0× on extremes.',
-    rarity: 'rare',
-    cost: 180,
-    icon: '🍀',
-    effects: [
-      { type: 'extraDraws', value: 1 },
-      { type: 'transformation', set: 'gambler', piece: 3 }
-    ]
-  },
-  {
-    id: 'transform-banker-1',
-    name: 'Banker\'s Ledger',
-    description: '[Banker 1/3] Gain +3% interest. Transform: +8% interest total.',
-    rarity: 'uncommon',
-    cost: 130,
-    icon: '📒',
-    effects: [
-      { type: 'interestRate', value: 0.03 },
-      { type: 'transformation', set: 'banker', piece: 1 }
-    ]
-  },
-  {
-    id: 'transform-banker-2',
-    name: 'Banker\'s Seal',
-    description: '[Banker 2/3] Every draw awards +5 points. Transform: +8% interest total.',
-    rarity: 'uncommon',
-    cost: 130,
-    icon: '🔏',
-    effects: [
-      { type: 'flatBonus', value: 5 },
-      { type: 'transformation', set: 'banker', piece: 2 }
-    ]
-  },
-  {
-    id: 'transform-banker-3',
-    name: 'Banker\'s Vault',
-    description: '[Banker 3/3] Gain +2% interest. Transform: +8% interest total.',
-    rarity: 'uncommon',
-    cost: 130,
-    icon: '🏦',
-    effects: [
-      { type: 'interestRate', value: 0.02 },
-      { type: 'transformation', set: 'banker', piece: 3 }
-    ]
-  },
-  // CONDITIONAL / RISK-REWARD ITEMS
-  {
-    id: 'conditional-double-down',
-    name: 'Double or Nothing',
-    description: 'When you HIT a bet, gain 50 extra bank. When you MISS, lose 15 bank.',
-    rarity: 'rare',
-    cost: 200,
-    icon: '⚡',
-    effects: [
-      { type: 'conditionalBonus', condition: 'onHit', bankReward: 50 },
-      { type: 'conditionalBonus', condition: 'onMiss', bankPenalty: 15 }
-    ]
-  },
-  {
-    id: 'conditional-high-roller',
-    name: 'High Roller\'s Pride',
-    description: 'Extreme bets (Joker, Ace) gain +1.5× multiplier but cost 10 bank.',
-    rarity: 'legendary',
-    cost: 300,
-    icon: '💸',
-    effects: [
-      { type: 'betMultiplier', betId: 'special-joker', value: 1.5 },
-      { type: 'betMultiplier', betId: 'special-ace', value: 1.5 },
-      { type: 'conditionalBonus', condition: 'onHit', bankPenalty: 10 }
-    ]
-  },
-  {
-    id: 'conditional-streak',
-    name: 'Momentum Engine',
-    description: 'Each consecutive hit increases your multiplier by +0.1×. Resets on miss.',
-    rarity: 'legendary',
-    cost: 340,
-    icon: '🔥',
-    effects: [
-      { type: 'comboCounter', value: 0.1, decay: 'onMiss' }
-    ]
-  },
-  {
-    id: 'conditional-comeback',
-    name: 'Underdog Spirit',
-    description: 'After missing a bet, next hit gains +1.0× multiplier.',
-    rarity: 'uncommon',
-    cost: 160,
-    icon: '💪',
-    effects: [
-      { type: 'conditionalBonus', condition: 'onMiss', multiplier: 1.0 }
-    ]
-  },
-  // GLOBAL MULTIPLIERS
-  {
-    id: 'global-amplifier',
-    name: 'Universal Amplifier',
-    description: 'ALL bets gain +0.3× multiplier.',
-    rarity: 'legendary',
-    cost: 380,
-    icon: '✨',
-    effects: [
-      { type: 'globalMultiplier', value: 0.3 }
-    ]
-  },
-  {
-    id: 'global-small',
-    name: 'Lucky Star',
-    description: 'ALL bets gain +0.15× multiplier.',
-    rarity: 'rare',
-    cost: 200,
-    icon: '⭐',
-    effects: [
-      { type: 'globalMultiplier', value: 0.15 }
-    ]
-  }
-];
-
-function cn(...classes: Array<string | false | null | undefined>) {
-  return classes.filter(Boolean).join(' ');
-}
-
-const DEFAULT_DECK_MODIFIERS: Required<DeckModifier> = {
-  extraDraws: 0,
-  flatBonus: 0,
-  interestBonus: 0,
-  startingBank: 0
-};
-
-const getProfileStorageKey = (profileId: string) => `${STORAGE_KEY}-${profileId}`;
-
-const templateByName = new Map<string, ShopUpgrade>(upgradeTemplates.map((template) => [template.name, template]));
-
-function isBossRound(roundNumber: number): boolean {
-  return roundNumber > 0 && roundNumber % 5 === 0;
-}
-
-function getBossForRound(roundNumber: number): BossModifier | null {
-  if (!isBossRound(roundNumber)) return null;
-  const bossIndex = Math.floor((roundNumber / 5) - 1) % bossModifiers.length;
-  return bossModifiers[bossIndex];
-}
-
-function calculateRoundTarget(roundNumber: number, ownedUpgrades: OwnedUpgrade[]): number {
-  // Quadratic scaling inspired by Balatro for escalating difficulty
-  // Creates urgency and forces players to find multiplicative synergies
-  const baseMultiplier = 1.35;
-  const exponentialComponent = Math.pow(baseMultiplier, roundNumber);
-  const linearComponent = roundNumber * 15;
-  const base = 50 + linearComponent + exponentialComponent;
-
-  const bonus = ownedUpgrades.reduce((total, upgrade) => {
-    if (upgrade.rarity === 'legendary') return total + 6;
-    if (upgrade.rarity === 'rare') return total + 3;
-    if (upgrade.rarity === 'uncommon') return total + 1;
-    return total;
-  }, 0);
-
-  let target = Math.max(40, Math.floor(base + bonus));
-
-  // Apply boss multiplier if this is a boss round
-  const boss = getBossForRound(roundNumber);
-  if (boss) {
-    target = Math.floor(target * boss.targetMultiplier);
-  }
-
-  return target;
-}
-
-function getShopSlotCount(roundNumber: number): number {
-  return Math.min(8, 6 + Math.floor((roundNumber - 1) / 3));
-}
-
-function getRarityWeight(rarity: Rarity, roundNumber: number): number {
-  const roundFactor = Math.max(0, roundNumber - 1);
-  switch (rarity) {
-    case 'legendary':
-      return 8 + roundFactor * 2.5;
-    case 'rare':
-      return 18 + roundFactor * 1.5;
-    case 'uncommon':
-      return Math.max(18, 28 - roundFactor * 1.2);
-    case 'common':
-    default:
-      return Math.max(12, 46 - roundFactor * 3.5);
-  }
-}
-
-function generateShopChoices(roundNumber: number, ownedUpgrades: OwnedUpgrade[] = []): ShopUpgrade[] {
-  const choices: ShopUpgrade[] = [];
-
-  // Get the base template IDs of owned upgrades to prevent duplicates
-  const ownedTemplateIds = new Set(
-    ownedUpgrades.map(upgrade => {
-      // Extract the original template ID by removing the unique suffix
-      const match = upgrade.id.match(/^(.+?)-\d+-\d+-[a-f0-9]+$/);
-      return match ? match[1] : upgrade.id;
-    })
-  );
-
-  // Filter out templates that are already owned
-  const availableTemplates = upgradeTemplates.filter(
-    template => !ownedTemplateIds.has(template.id)
-  );
-
-  if (availableTemplates.length === 0) {
-    return []; // No items left to offer
-  }
-
-  const slotCount = getShopSlotCount(roundNumber);
-
-  const cheapPool = availableTemplates.filter((template) => template.cost <= 120);
-  if (cheapPool.length > 0 && choices.length < slotCount) {
-    const cheapTemplate = cheapPool[Math.floor(Math.random() * cheapPool.length)];
-    choices.push({
-      ...cheapTemplate,
-      id: `${cheapTemplate.id}-${roundNumber}-${Date.now()}-${Math.random().toString(16).slice(2)}`
-    });
-    const removalIndex = availableTemplates.findIndex((template) => template.id === cheapTemplate.id);
-    if (removalIndex !== -1) {
-      availableTemplates.splice(removalIndex, 1);
-    }
-  }
-
-  while (choices.length < slotCount && availableTemplates.length > 0) {
-    const weightTotal = availableTemplates.reduce(
-      (total, template) => total + getRarityWeight(template.rarity, roundNumber),
-      0
-    );
-    let pick = Math.random() * weightTotal;
-
-    let selectedIndex = 0;
-    for (let i = 0; i < availableTemplates.length; i++) {
-      pick -= getRarityWeight(availableTemplates[i].rarity, roundNumber);
-      if (pick <= 0) {
-        selectedIndex = i;
-        break;
-      }
-    }
-
-    const template = availableTemplates.splice(selectedIndex, 1)[0];
-    choices.push({
-      ...template,
-      id: `${template.id}-${roundNumber}-${Date.now()}-${Math.random().toString(16).slice(2)}`
-    });
-  }
-
-  return choices;
-}
-
-function getExtraDraws(upgrades: OwnedUpgrade[]): number {
-  return upgrades.reduce((total, upgrade) => {
-    const effectSum = upgrade.effects
-      .filter((effect) => effect.type === 'extraDraws')
-      .reduce((sum, effect) => sum + (effect.type === 'extraDraws' ? effect.value : 0), 0);
-    return total + effectSum;
-  }, 0);
-}
-
-function getFlatBonus(upgrades: OwnedUpgrade[]): number {
-  return upgrades.reduce((total, upgrade) => {
-    const effectSum = upgrade.effects
-      .filter((effect) => effect.type === 'flatBonus')
-      .reduce((sum, effect) => sum + (effect.type === 'flatBonus' ? effect.value : 0), 0);
-    return total + effectSum;
-  }, 0);
-}
-
-function getBetBonusMap(upgrades: OwnedUpgrade[]): Map<string, number> {
-  const map = new Map<string, number>();
-
-  // Base bet multipliers from items
-  upgrades.forEach((upgrade) => {
-    upgrade.effects
-      .filter((effect): effect is Extract<UpgradeEffect, { type: 'betMultiplier' }> => effect.type === 'betMultiplier')
-      .forEach((effect) => {
-        map.set(effect.betId, (map.get(effect.betId) ?? 0) + effect.value);
-      });
-  });
-
-  // Add synergy bonuses for red/black bets
-  const synergyBonuses = getSynergyBonuses(upgrades);
-  const redSynergy = synergyBonuses.get('red-synergy');
-  const blackSynergy = synergyBonuses.get('black-synergy');
-
-  if (redSynergy) {
-    map.set('color-red', (map.get('color-red') ?? 0) + redSynergy.multiplier);
-  }
-  if (blackSynergy) {
-    map.set('color-black', (map.get('color-black') ?? 0) + blackSynergy.multiplier);
-  }
-
-  // Add transformation bonuses
-  const completedTransformations = getCompletedTransformations(upgrades);
-  const { betMultipliers: transformBonuses } = getTransformationBonuses(completedTransformations);
-
-  transformBonuses.forEach((bonus, betId) => {
-    map.set(betId, (map.get(betId) ?? 0) + bonus);
-  });
-
-  return map;
-}
-
-function getInterestBonus(upgrades: OwnedUpgrade[]): number {
-  let total = upgrades.reduce((acc, upgrade) => {
-    const bonus = upgrade.effects
-      .filter((effect): effect is Extract<UpgradeEffect, { type: 'interestRate' }> => effect.type === 'interestRate')
-      .reduce((sum, effect) => sum + effect.value, 0);
-    return acc + bonus;
-  }, 0);
-
-  // Add synergy bonuses for interest
-  const synergyBonuses = getSynergyBonuses(upgrades);
-  const interestSynergy = synergyBonuses.get('interest-synergy');
-  if (interestSynergy && interestSynergy.interestBonus) {
-    total += interestSynergy.interestBonus;
-  }
-
-  // Add transformation bonuses
-  const completedTransformations = getCompletedTransformations(upgrades);
-  const { interestBonus: transformBonus } = getTransformationBonuses(completedTransformations);
-  total += transformBonus;
-
-  return total;
-}
-
-function getSynergyBonuses(upgrades: OwnedUpgrade[]): Map<string, { betId?: string; interestBonus?: number; multiplier: number }> {
-  const synergies = new Map<string, { betId?: string; interestBonus?: number; multiplier: number }>();
-
-  upgrades.forEach(upgrade => {
-    upgrade.effects
-      .filter((effect): effect is Extract<UpgradeEffect, { type: 'synergyMultiplier' }> => effect.type === 'synergyMultiplier')
-      .forEach(effect => {
-        // Count how many items with this tag the player owns
-        const tagCount = upgrades.filter(u => u.tags?.includes(effect.tag)).length;
-        const totalBonus = effect.value * tagCount;
-
-        // Determine if this is a bet synergy or interest synergy
-        if (effect.tag.includes('synergy')) {
-          const key = effect.tag;
-          if (!synergies.has(key)) {
-            synergies.set(key, { multiplier: 0 });
-          }
-          const entry = synergies.get(key)!;
-
-          if (effect.tag === 'interest-synergy') {
-            entry.interestBonus = (entry.interestBonus ?? 0) + totalBonus;
-          } else {
-            // For bet synergies, we need to find which bet this applies to
-            // This will be applied in getBetBonusMap
-            entry.multiplier += totalBonus;
-          }
-        }
-      });
-  });
-
-  return synergies;
-}
-
-function getGlobalMultiplier(upgrades: OwnedUpgrade[]): number {
-  return upgrades.reduce((total, upgrade) => {
-    const bonus = upgrade.effects
-      .filter((effect): effect is Extract<UpgradeEffect, { type: 'globalMultiplier' }> => effect.type === 'globalMultiplier')
-      .reduce((sum, effect) => sum + effect.value, 0);
-    return total + bonus;
-  }, 0);
-}
-
-function getCompletedTransformations(upgrades: OwnedUpgrade[]): Set<string> {
-  const transformationPieces = new Map<string, number>();
-
-  upgrades.forEach(upgrade => {
-    upgrade.effects
-      .filter((effect): effect is Extract<UpgradeEffect, { type: 'transformation' }> => effect.type === 'transformation')
-      .forEach(effect => {
-        transformationPieces.set(effect.set, (transformationPieces.get(effect.set) ?? 0) + 1);
-      });
-  });
-
-  const completed = new Set<string>();
-  transformationPieces.forEach((count, set) => {
-    if (count >= 3) {
-      completed.add(set);
-    }
-  });
-
-  return completed;
-}
-
-function getTransformationBonuses(completedSets: Set<string>): { betMultipliers: Map<string, number>; interestBonus: number } {
-  const betMultipliers = new Map<string, number>();
-  let interestBonus = 0;
-
-  completedSets.forEach(set => {
-    if (set === 'gambler') {
-      // Gambler transformation: +2.0× on extreme bets
-      betMultipliers.set('special-joker', (betMultipliers.get('special-joker') ?? 0) + 2.0);
-      betMultipliers.set('special-ace', (betMultipliers.get('special-ace') ?? 0) + 2.0);
-    } else if (set === 'banker') {
-      // Banker transformation: +8% total interest
-      interestBonus += 0.08;
-    }
-  });
-
-  return { betMultipliers, interestBonus };
 }
 
 const getProfileById = (profilesData: PlayerProfile[], id: string | null) =>
@@ -1451,160 +351,21 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
     setIsDeckModalOpen(false);
   }, []);
 
-  const palette = useMemo(() => {
-    if (theme === 'dark') {
-      return {
-        shell: 'bg-gradient-to-br from-slate-950 via-slate-950 to-slate-900 text-slate-100',
-        menuShell:
-          'bg-gradient-to-br from-slate-950 via-slate-950 to-slate-900 text-slate-100',
-        panelLeft:
-          'bg-slate-950/80 border border-slate-800 shadow-[0_25px_60px_rgba(2,6,23,0.65)] backdrop-blur-xl',
-        panelRight:
-          'bg-slate-950/70 border border-slate-800 shadow-[0_20px_55px_rgba(2,6,23,0.55)] backdrop-blur-xl',
-        surfaceCard:
-          'bg-slate-950/70 border border-slate-800 shadow-[0_20px_55px_rgba(2,6,23,0.5)] backdrop-blur-xl',
-        surfaceMuted:
-          'bg-slate-950/85 border border-slate-800 shadow-[0_30px_70px_rgba(2,6,23,0.65)] backdrop-blur-xl',
-        borderSubtle: 'border-slate-800/70',
-        text: {
-          primary: 'text-slate-100',
-          secondary: 'text-slate-300',
-          accent: 'text-sky-300',
-          accentSoft: 'text-sky-300/70',
-          positive: 'text-emerald-300',
-          positiveSoft: 'text-emerald-300/70',
-          warning: 'text-amber-300',
-          warningSoft: 'text-amber-300/70',
-          danger: 'text-rose-300',
-          dangerSoft: 'text-rose-300/70'
-        },
-        button: {
-          accent:
-            'bg-sky-500 hover:bg-sky-400 text-slate-950 border border-sky-400 shadow-[0_20px_45px_rgba(56,189,248,0.35)]',
-          accentSecondary:
-            'bg-sky-500/15 hover:bg-sky-500/25 text-sky-200 border border-sky-400/40 shadow-[0_12px_25px_rgba(56,189,248,0.2)]',
-          positive:
-            'bg-emerald-500 hover:bg-emerald-400 text-slate-950 border border-emerald-400 shadow-[0_20px_45px_rgba(16,185,129,0.35)]',
-          warning:
-            'bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-300 shadow-[0_20px_45px_rgba(251,191,36,0.35)]',
-          danger:
-            'bg-rose-500 hover:bg-rose-400 text-slate-50 border border-rose-400 shadow-[0_20px_45px_rgba(244,63,94,0.35)]',
-          muted:
-            'bg-slate-900/50 hover:bg-slate-900/70 text-slate-200 border border-slate-700 shadow-[0_12px_30px_rgba(2,6,23,0.55)]'
-        },
-        score: {
-          neutral:
-            'bg-gradient-to-br from-slate-950 via-slate-900/80 to-slate-950 border border-slate-800 shadow-[0_25px_60px_rgba(2,6,23,0.65)]',
-          accent:
-            'bg-gradient-to-br from-sky-500/25 via-slate-900/80 to-slate-950 border border-sky-400/60 shadow-[0_30px_65px_rgba(37,99,235,0.45)]',
-          positive:
-            'bg-gradient-to-br from-emerald-500/25 via-slate-900/80 to-slate-950 border border-emerald-400/60 shadow-[0_30px_65px_rgba(16,185,129,0.45)]',
-          warning:
-            'bg-gradient-to-br from-amber-400/25 via-slate-900/80 to-slate-950 border border-amber-300/60 shadow-[0_30px_65px_rgba(251,191,36,0.45)]',
-          danger:
-            'bg-gradient-to-br from-rose-500/25 via-slate-900/80 to-slate-950 border border-rose-400/60 shadow-[0_30px_65px_rgba(244,63,94,0.45)]',
-          legendary:
-            'bg-gradient-to-br from-amber-300/35 via-slate-900/70 to-sky-500/30 border border-amber-300/60 shadow-[0_35px_70px_rgba(251,191,36,0.45)]'
-        },
-        bet: {
-          card:
-            'bg-slate-950/70 border border-slate-800 hover:border-sky-400/50 hover:bg-slate-900/80 transition-all duration-200 shadow-[0_12px_30px_rgba(2,6,23,0.45)]',
-          active:
-            'bg-gradient-to-br from-emerald-500/20 via-slate-950/80 to-slate-950 border border-emerald-400/60 shadow-[0_20px_45px_rgba(16,185,129,0.4)]'
-        },
-        tags: {
-          extreme:
-            'border border-rose-400/40 bg-rose-500/15 text-rose-300 uppercase tracking-wide px-2 py-0.5 text-[0.7rem] font-semibold rounded-full',
-          high:
-            'border border-amber-300/40 bg-amber-400/15 text-amber-300 uppercase tracking-wide px-2 py-0.5 text-[0.7rem] font-semibold rounded-full',
-          medium:
-            'border border-sky-400/40 bg-sky-500/15 text-sky-300 uppercase tracking-wide px-2 py-0.5 text-[0.7rem] font-semibold rounded-full',
-          low:
-            'border border-emerald-400/40 bg-emerald-500/15 text-emerald-300 uppercase tracking-wide px-2 py-0.5 text-[0.7rem] font-semibold rounded-full'
-        },
-        deckLayer:
-          'absolute inset-0 rounded-xl bg-gradient-to-br from-sky-600 to-sky-500 shadow-[0_10px_30px_rgba(8,12,24,0.55)]',
-        themeBadge:
-          'inline-flex items-center gap-2 rounded-full border border-sky-400/40 bg-sky-500/15 px-4 py-1 text-xs font-semibold tracking-[0.4em] text-sky-200',
-        bulletIcon: 'border border-sky-400/40 bg-sky-500/15 text-sky-200'
-      };
-    }
+  const openSettings = useCallback(() => {
+    setIsSettingsOpen(true);
+  }, []);
 
-    return {
-      shell: 'bg-slate-100 text-slate-900',
-      menuShell: 'bg-gradient-to-br from-slate-100 via-white to-slate-100 text-slate-900',
-      panelLeft:
-        'bg-white/90 border border-slate-200 shadow-[0_25px_55px_rgba(148,163,184,0.38)] backdrop-blur-xl',
-      panelRight:
-        'bg-white/85 border border-slate-200 shadow-[0_25px_55px_rgba(148,163,184,0.32)] backdrop-blur-xl',
-      surfaceCard:
-        'bg-white/90 border border-slate-200 shadow-[0_20px_50px_rgba(148,163,184,0.28)] backdrop-blur-xl',
-      surfaceMuted:
-        'bg-slate-50/95 border border-slate-200 shadow-[0_25px_60px_rgba(148,163,184,0.32)] backdrop-blur-xl',
-      borderSubtle: 'border-slate-200',
-      text: {
-        primary: 'text-slate-900',
-        secondary: 'text-slate-600',
-        accent: 'text-sky-600',
-        accentSoft: 'text-sky-500',
-        positive: 'text-emerald-600',
-        positiveSoft: 'text-emerald-500',
-        warning: 'text-amber-600',
-        warningSoft: 'text-amber-500',
-        danger: 'text-rose-600',
-        dangerSoft: 'text-rose-500'
-      },
-      button: {
-        accent:
-          'bg-sky-500 hover:bg-sky-600 text-white border border-sky-500 shadow-[0_20px_45px_rgba(56,189,248,0.3)]',
-        accentSecondary:
-          'bg-sky-50 hover:bg-sky-100 text-sky-600 border border-sky-200 shadow-[0_10px_25px_rgba(59,130,246,0.18)]',
-        positive:
-          'bg-emerald-500 hover:bg-emerald-600 text-white border border-emerald-500 shadow-[0_20px_45px_rgba(16,185,129,0.28)]',
-        warning:
-          'bg-amber-400 hover:bg-amber-500 text-slate-900 border border-amber-400 shadow-[0_20px_45px_rgba(251,191,36,0.28)]',
-        danger:
-          'bg-rose-500 hover:bg-rose-600 text-white border border-rose-500 shadow-[0_20px_45px_rgba(244,63,94,0.28)]',
-        muted:
-          'bg-white hover:bg-slate-100 text-slate-600 border border-slate-200 shadow-[0_10px_25px_rgba(148,163,184,0.2)]'
-      },
-      score: {
-        neutral:
-          'bg-gradient-to-br from-white via-slate-50 to-white border border-slate-200 shadow-[0_25px_55px_rgba(148,163,184,0.32)]',
-        accent:
-          'bg-gradient-to-br from-sky-100 via-white to-slate-50 border border-sky-200 shadow-[0_25px_55px_rgba(148,163,184,0.32)]',
-        positive:
-          'bg-gradient-to-br from-emerald-100 via-white to-slate-50 border border-emerald-200 shadow-[0_25px_55px_rgba(148,163,184,0.32)]',
-        warning:
-          'bg-gradient-to-br from-amber-100 via-white to-slate-50 border border-amber-200 shadow-[0_25px_55px_rgba(148,163,184,0.32)]',
-        danger:
-          'bg-gradient-to-br from-rose-100 via-white to-slate-50 border border-rose-200 shadow-[0_25px_55px_rgba(148,163,184,0.32)]',
-        legendary:
-          'bg-gradient-to-br from-amber-100 via-sky-100/80 to-white border border-amber-200 shadow-[0_25px_55px_rgba(148,163,184,0.32)]'
-      },
-      bet: {
-        card:
-          'bg-white/80 border border-slate-200 hover:border-sky-300 hover:bg-sky-50 transition-all duration-200 shadow-[0_10px_25px_rgba(148,163,184,0.2)]',
-        active:
-          'bg-gradient-to-br from-emerald-100 via-white to-emerald-50 border border-emerald-300 shadow-[0_20px_45px_rgba(16,185,129,0.28)]'
-      },
-      tags: {
-        extreme:
-          'border border-rose-200 bg-rose-100/60 text-rose-600 uppercase tracking-wide px-2 py-0.5 text-[0.7rem] font-semibold rounded-full',
-        high:
-          'border border-amber-200 bg-amber-100/60 text-amber-600 uppercase tracking-wide px-2 py-0.5 text-[0.7rem] font-semibold rounded-full',
-        medium:
-          'border border-sky-200 bg-sky-100/60 text-sky-600 uppercase tracking-wide px-2 py-0.5 text-[0.7rem] font-semibold rounded-full',
-        low:
-          'border border-emerald-200 bg-emerald-100/60 text-emerald-600 uppercase tracking-wide px-2 py-0.5 text-[0.7rem] font-semibold rounded-full'
-      },
-      deckLayer:
-        'absolute inset-0 rounded-xl bg-gradient-to-br from-sky-500 to-sky-400 shadow-[0_8px_25px_rgba(148,163,184,0.35)]',
-      themeBadge:
-        'inline-flex items-center gap-2 rounded-full border border-sky-200 bg-sky-50 px-4 py-1 text-xs font-semibold tracking-[0.4em] text-sky-600',
-      bulletIcon: 'border border-sky-200 bg-sky-100 text-sky-600'
-    };
-  }, [theme]);
+  const closeSettings = useCallback(() => {
+    setIsSettingsOpen(false);
+  }, []);
+
+  const handleContinueRun = useCallback(() => {
+    setGamePhase('gameplay');
+    setReadyToPersist(true);
+  }, []);
+
+  const palette = useMemo(() => getThemePalette(theme), [theme]);
+
 
   const buttonBase =
     'inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 font-semibold transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-sky-400 disabled:opacity-60 disabled:cursor-not-allowed';
@@ -1613,50 +374,8 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
   const scorePalette = palette.score;
   const betPalette = palette.bet;
   const tagPalette = palette.tags;
-  const disabledButtonClasses =
-    theme === 'dark'
-      ? 'bg-slate-900/40 text-slate-500 border border-slate-800 shadow-none'
-      : 'bg-slate-200 text-slate-400 border border-slate-200 shadow-none';
-  const rarityStyles = useMemo(() => {
-    if (theme === 'dark') {
-      return {
-        common: {
-          card: 'border-slate-700 shadow-[0_18px_45px_rgba(8,12,24,0.55)]',
-          badge: 'border border-slate-600 bg-slate-900/70 text-slate-200'
-        },
-        uncommon: {
-          card: 'border-emerald-500/40 shadow-[0_20px_50px_rgba(16,185,129,0.35)]',
-          badge: 'border border-emerald-400/50 bg-emerald-500/20 text-emerald-200'
-        },
-        rare: {
-          card: 'border-sky-500/40 shadow-[0_20px_50px_rgba(56,189,248,0.35)]',
-          badge: 'border border-sky-400/50 bg-sky-500/20 text-sky-100'
-        },
-        legendary: {
-          card: 'border-amber-400/50 shadow-[0_24px_55px_rgba(251,191,36,0.4)]',
-          badge: 'border border-amber-300/60 bg-amber-400/20 text-amber-100'
-        }
-      } as Record<Rarity, { card: string; badge: string }>;
-    }
-    return {
-      common: {
-        card: 'border-slate-200 shadow-[0_16px_40px_rgba(148,163,184,0.28)]',
-        badge: 'border border-slate-200 bg-slate-100 text-slate-600'
-      },
-      uncommon: {
-        card: 'border-emerald-200 shadow-[0_18px_45px_rgba(16,185,129,0.24)]',
-        badge: 'border border-emerald-200 bg-emerald-100 text-emerald-700'
-      },
-      rare: {
-        card: 'border-sky-200 shadow-[0_18px_45px_rgba(59,130,246,0.24)]',
-        badge: 'border border-sky-200 bg-sky-100 text-sky-700'
-      },
-      legendary: {
-        card: 'border-amber-200 shadow-[0_20px_48px_rgba(251,191,36,0.3)]',
-        badge: 'border border-amber-200 bg-amber-100 text-amber-700'
-      }
-    } as Record<Rarity, { card: string; badge: string }>;
-  }, [theme]);
+  const disabledButtonClasses = getDisabledButtonClasses(theme);
+  const rarityStyles = useMemo(() => getRarityStyles(theme), [theme]);
 
   const selectedBet = useMemo(
     () => (selectedBetId ? betOptionMap.get(selectedBetId) ?? null : null),
@@ -1873,11 +592,10 @@ const resetGameState = () => {
         setRoundScore(typeof parsed.roundScore === 'number' ? parsed.roundScore : 0);
 
         const basePresetModifiers = getDeckPresetById(resolvedDeckId).modifiers;
-        const storedDeckModifiers = {
-          ...DEFAULT_DECK_MODIFIERS,
-          ...basePresetModifiers,
-          ...(parsed.deckModifiers ?? {})
-        } as Required<DeckModifier>;
+        const storedDeckModifiers = mergeDeckModifiers(
+          basePresetModifiers,
+          parsed.deckModifiers ?? undefined
+        );
         setDeckModifiers(storedDeckModifiers);
         setActiveDeckId(resolvedDeckId);
         setPendingDeckId(resolvedDeckId);
@@ -1937,7 +655,7 @@ const resetGameState = () => {
         } else {
           setPurchasedShopIds([]);
           if (initialGamePhase === 'shop' || initialGamePhase === 'shopTransition') {
-            setShopChoices(generateShopChoices(storedRoundNumber, storedOwnedUpgrades));
+            setShopChoices(generateShopChoices(storedRoundNumber, hydratedOwnedUpgrades));
           } else {
             setShopChoices([]);
           }
@@ -1999,12 +717,12 @@ const resetGameState = () => {
     activeProfileId
   ]);
 
-  const clearFinalizeTimeout = () => {
+  const clearFinalizeTimeout = useCallback(() => {
     if (roundFinalizeTimeoutRef.current) {
       clearTimeout(roundFinalizeTimeoutRef.current);
       roundFinalizeTimeoutRef.current = null;
     }
-  };
+  }, []);
 
   useEffect(() => {
     if (!isMusicPlaying) {
@@ -2173,7 +891,10 @@ const resetGameState = () => {
       audioCtxRef.current.close().catch(console.warn);
       audioCtxRef.current = null;
     }
-    clearFinalizeTimeout();
+    if (roundFinalizeTimeoutRef.current) {
+      clearTimeout(roundFinalizeTimeoutRef.current);
+      roundFinalizeTimeoutRef.current = null;
+    }
     if (shopTransitionTimeoutRef.current) {
       clearTimeout(shopTransitionTimeoutRef.current);
     }
@@ -2223,12 +944,39 @@ const resetGameState = () => {
   const settingsButton = !isSettingsOpen && gamePhase !== 'gameOver' ? (
     <button
       type="button"
-      onClick={() => setIsSettingsOpen(true)}
+      onClick={openSettings}
       className={cn(buttonBase, buttonPalette.accentSecondary, 'px-4 py-2 text-sm')}
     >
       Settings
     </button>
   ) : null;
+
+  const settingsModal = (
+    <SettingsModal
+      isOpen={isSettingsOpen}
+      onClose={closeSettings}
+      palette={palette}
+      textPalette={textPalette}
+      buttonPalette={buttonPalette}
+      buttonBase={buttonBase}
+      themeToggleButton={themeToggleButton}
+      musicToggleButton={musicToggleButton}
+    />
+  );
+
+  const selectedDeckPreset = useMemo(
+    () => getDeckPresetById(pendingDeckId),
+    [pendingDeckId]
+  );
+
+  const canStartDeck = useMemo(
+    () => isDeckUnlocked(currentProfile, selectedDeckPreset),
+    [currentProfile, selectedDeckPreset]
+  );
+
+  const handleDeckSelect = useCallback((deckId: string) => {
+    setPendingDeckId(deckId);
+  }, []);
 
   const gainRatio = roundTarget > 0 ? lastDrawScore / roundTarget : 0;
   let scoreCardClass = scorePalette.neutral;
@@ -2359,40 +1107,26 @@ const resetGameState = () => {
     startRunWithDeck(preset.id);
   }, [currentProfile, pendingDeckId, startRunWithDeck]);
 
-  const clearSavedData = () => {
-    clearFinalizeTimeout();
-    if (shopTransitionTimeoutRef.current) {
-      clearTimeout(shopTransitionTimeoutRef.current);
-      shopTransitionTimeoutRef.current = null;
-    }
-    deckRef.current = [];
-    setDeck([]);
-    setBank(0);
-    setRoundNumber(1);
-    setRoundScore(0);
-    setRoundTarget(calculateRoundTarget(1, []));
-    setDrawsRemaining(BASE_DRAWS);
-    setRoundOutcome('active');
-    setSelectedBetId(null);
-    setFloatingScores([]);
-    setDrawAnimations([]);
-    setRecentCards([]);
-    setOwnedUpgrades([]);
-    setShopChoices([]);
-    setShopMessage(null);
-    setShopTransitionMessage(null);
-    setBetFeedback(null);
-    setLastDrawScore(0);
-    setLastDrawnCard(null);
-    setTargetAchieved(false);
-    setPurchasedShopIds([]);
-    setGamePhase('menu');
-    setActiveDeckId(deckPresets[0].id);
-    setDeckModifiers(DEFAULT_DECK_MODIFIERS);
-    if (typeof window !== 'undefined' && activeProfileId) {
-      localStorage.removeItem(getProfileStorageKey(activeProfileId));
-    }
-  };
+  const deckSelectionModal = (
+    <DeckSelectionModal
+      isOpen={isDeckModalOpen}
+      onCancel={handleDeckCancel}
+      onConfirm={handleDeckConfirm}
+      onSelectDeck={handleDeckSelect}
+      deckPresets={deckPresets}
+      currentProfile={currentProfile}
+      isDeckUnlocked={isDeckUnlocked}
+      palette={palette}
+      textPalette={textPalette}
+      buttonPalette={buttonPalette}
+      buttonBase={buttonBase}
+      disabledButtonClasses={disabledButtonClasses}
+      theme={theme}
+      formatDisplayNumber={formatDisplayNumber}
+      pendingDeckId={pendingDeckId}
+      canStart={canStartDeck}
+    />
+  );
 
   const handleDraw = () => {
     if (gamePhase !== 'gameplay') return;
@@ -2711,603 +1445,85 @@ const resetGameState = () => {
     setGamePhase('menu');
   };
 
-  const renderMenu = () => (
-    <div className={cn('min-h-screen flex items-center justify-center px-6 py-16', palette.menuShell)}>
-      <div className="w-full max-w-2xl">
-        <div className={cn('rounded-3xl p-8 lg:p-12 space-y-8', palette.surfaceCard)}>
-          {/* Header */}
-          <div className="text-center space-y-4">
-            <div className="flex justify-center">
-              <div className={palette.themeBadge}>Arcade Build</div>
-            </div>
-            <h1 className={cn('text-5xl font-extrabold tracking-tight', textPalette.primary)}>
-              Card Clicker
-            </h1>
-            <p className={cn('text-base leading-relaxed', textPalette.secondary)}>
-              Flip fast, bank smarter, and experiment with new relic builds between rounds.
-            </p>
-          </div>
+  const getBetLabel = (betId: string) => betOptionMap.get(betId)?.label ?? betId;
 
-          {/* Stats */}
-          <div className="flex justify-center gap-8 text-center">
-            <div className="space-y-1">
-              <div className={cn('uppercase tracking-wider text-xs', textPalette.secondary)}>
-                Bank
-              </div>
-              <div className={cn('text-2xl font-semibold', textPalette.accent)}>
-                {formatDisplayNumber(bank)}
-              </div>
-            </div>
-            <div className="space-y-1">
-              <div className={cn('uppercase tracking-wider text-xs', textPalette.secondary)}>
-                Best Round
-              </div>
-              <div className={cn('text-2xl font-semibold', textPalette.positive)}>
-                {currentProfile?.bestRound ?? roundNumber}
-              </div>
-            </div>
-            <div className="space-y-1">
-              <div className={cn('uppercase tracking-wider text-xs', textPalette.secondary)}>
-                Relics
-              </div>
-              <div className={cn('text-2xl font-semibold', textPalette.warning)}>
-                {ownedUpgrades.length}
-              </div>
-            </div>
-          </div>
-
-          {/* Main Action */}
-          <div className="space-y-3">
-            {(() => {
-              // Check if there's a saved game in progress
-              const hasSavedGame = activeProfileId && typeof window !== 'undefined' &&
-                localStorage.getItem(getProfileStorageKey(activeProfileId));
-
-              return hasSavedGame ? (
-                <>
-                  <button
-                    onClick={() => {
-                      setGamePhase('gameplay');
-                      setReadyToPersist(true);
-                    }}
-                    className={cn(buttonBase, buttonPalette.accent, 'w-full py-4 text-lg')}
-                  >
-                    Continue Run
-                  </button>
-                  <button
-                    onClick={() => setIsDeckModalOpen(true)}
-                    className={cn(buttonBase, buttonPalette.accentSecondary, 'w-full')}
-                  >
-                    Start New Run
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={() => setIsDeckModalOpen(true)}
-                  className={cn(buttonBase, buttonPalette.accent, 'w-full py-4 text-lg')}
-                >
-                  Start New Run
-                </button>
-              );
-            })()}
-          </div>
-
-          {/* Profile Info */}
-          <div className={cn('pt-6 border-t space-y-3', palette.borderSubtle)}>
-            <div className="text-center">
-              <div className={cn('text-xs uppercase tracking-wider', textPalette.secondary)}>
-                Active Profile
-              </div>
-              <div className={cn('text-lg font-semibold', textPalette.primary)}>
-                {currentProfile?.name ?? 'No Profile'}
-              </div>
-              <div className={cn('text-xs', textPalette.secondary)}>
-                {currentProfile ? currentProfile.unlockedDecks.length : 0}/{deckPresets.length} Decks Unlocked
-              </div>
-            </div>
-
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={newProfileName}
-                onChange={handleProfileNameChange}
-                placeholder="New profile name"
-                className={cn(
-                  'flex-1 rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400',
-                  palette.borderSubtle,
-                  theme === 'dark' ? 'bg-slate-950/70 text-slate-100' : 'bg-white text-slate-900'
-                )}
-              />
-              <button
-                onClick={handleSaveProfile}
-                className={cn(buttonBase, buttonPalette.accent, 'whitespace-nowrap')}
-              >
-                Save
-              </button>
-            </div>
-
-            {profiles.length > 0 && (
-              <div className="flex gap-2">
-                <select
-                  value={profileSelectionId ?? ''}
-                  onChange={handleProfileSelectionChange}
-                  className={cn(
-                    'flex-1 rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400',
-                    palette.borderSubtle,
-                    theme === 'dark' ? 'bg-slate-950/70 text-slate-100' : 'bg-white text-slate-900'
-                  )}
-                >
-                  {profiles.map((profile) => (
-                    <option key={profile.id} value={profile.id}>
-                      {profile.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  onClick={handleLoadProfile}
-                  className={cn(buttonBase, buttonPalette.accentSecondary)}
-                  disabled={!profileSelectionId || profileSelectionId === activeProfileId}
-                >
-                  Load
-                </button>
-                <button
-                  onClick={handleDeleteProfile}
-                  className={cn(buttonBase, buttonPalette.danger)}
-                  disabled={!profileSelectionId || profiles.length <= 1}
-                >
-                  Delete
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Settings Button */}
-          <div className="flex justify-center">
-            {settingsButton}
-          </div>
-        </div>
-      </div>
-    </div>
+  const shopView = (
+    <ShopView
+      palette={palette}
+      textPalette={textPalette}
+      buttonPalette={buttonPalette}
+      buttonBase={buttonBase}
+      formatDisplayNumber={formatDisplayNumber}
+      roundNumber={roundNumber}
+      roundScore={roundScore}
+      bank={bank}
+      interestRate={interestRate}
+      onProceed={proceedToNextRound}
+      onReturnToMenu={resetToMenu}
+      message={shopMessage}
+      settingsButton={settingsButton}
+      shopChoices={shopChoices}
+      rarityStyles={rarityStyles}
+      onBuyUpgrade={buyUpgrade}
+      betLabelForId={getBetLabel}
+    />
   );
 
-  const renderGameOverOverlay = () => (
-    <div className={cn('fixed inset-0 z-40 flex items-center justify-center bg-slate-950/80 backdrop-blur-xl')}>
-      <div className={cn('w-full max-w-3xl rounded-3xl p-12 text-center space-y-10', palette.surfaceMuted)}>
-        <div>
-          <h2 className={cn('mb-4 text-4xl font-bold', textPalette.danger)}>Run Lost</h2>
-          <p className={cn('text-lg leading-relaxed', textPalette.secondary)}>
-            You ran out of draws before hitting the target. Reset here or head back to the menu to
-            tweak your plan.
-          </p>
-        </div>
-        <div className="grid grid-cols-2 gap-6 text-left md:grid-cols-4">
-          <div className={cn('rounded-2xl p-5', palette.surfaceCard)}>
-            <div className={cn('mb-2 text-xs uppercase tracking-wider', textPalette.secondary)}>Bank</div>
-            <div className={cn('text-3xl font-semibold', textPalette.accent)}>
-              {formatDisplayNumber(bank)}
-            </div>
-          </div>
-          <div className={cn('rounded-2xl p-5', palette.surfaceCard)}>
-            <div className={cn('mb-2 text-xs uppercase tracking-wider', textPalette.secondary)}>
-              Round Reached
-            </div>
-            <div className={cn('text-3xl font-semibold', textPalette.positive)}>{roundNumber}</div>
-          </div>
-          <div className={cn('rounded-2xl p-5', palette.surfaceCard)}>
-            <div className={cn('mb-2 text-xs uppercase tracking-wider', textPalette.secondary)}>
-              Relics Owned
-            </div>
-            <div className={cn('text-3xl font-semibold', textPalette.warning)}>
-              {ownedUpgrades.length}
-            </div>
-          </div>
-          <div className={cn('rounded-2xl p-5', palette.surfaceCard)}>
-            <div className={cn('mb-2 text-xs uppercase tracking-wider', textPalette.secondary)}>
-              Interest Rate
-            </div>
-            <div className={cn('text-3xl font-semibold', textPalette.positive)}>
-              {(interestRate * 100).toFixed(0)}%
-            </div>
-          </div>
-        </div>
-        <div className="space-y-3">
-          <button onClick={startNewRun} className={cn(buttonBase, buttonPalette.accent, 'w-full')}>
-            Launch New Run
-          </button>
-          <button onClick={resetToMenu} className={cn(buttonBase, buttonPalette.muted, 'w-full')}>
-            Return to Main Menu
-          </button>
-        </div>
-        {lastDrawnCard && (
-          <div className={cn('mx-auto mt-6 w-32 text-center', textPalette.secondary)}>
-            <div className="mb-2 text-xs uppercase tracking-[0.3em]">Last Draw</div>
-            <div className={cn('rounded-2xl border p-3', palette.borderSubtle)}>
-              <Card
-                suit={lastDrawnCard.suit}
-                rank={lastDrawnCard.rank}
-                isJoker={lastDrawnCard.isJoker}
-                jokerColor={lastDrawnCard.jokerColor}
-              />
-            </div>
-          </div>
-        )}
-      </div>
-      <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
-        {settingsButton}
-      </div>
-    </div>
+  const menuScreen = (
+    <MenuScreen
+      palette={palette}
+      textPalette={textPalette}
+      buttonPalette={buttonPalette}
+      buttonBase={buttonBase}
+      settingsButton={settingsButton}
+      bank={bank}
+      currentProfile={currentProfile}
+      roundNumber={roundNumber}
+      ownedUpgradeCount={ownedUpgrades.length}
+      formatDisplayNumber={formatDisplayNumber}
+      activeProfileId={activeProfileId}
+      onContinueRun={handleContinueRun}
+      onStartNewRun={startNewRun}
+      newProfileName={newProfileName}
+      onProfileNameChange={handleProfileNameChange}
+      onSaveProfile={handleSaveProfile}
+      profiles={profiles}
+      profileSelectionId={profileSelectionId}
+      onProfileSelectionChange={handleProfileSelectionChange}
+      onLoadProfile={handleLoadProfile}
+      onDeleteProfile={handleDeleteProfile}
+      theme={theme}
+      deckCount={deckPresets.length}
+      getProfileStorageKey={getProfileStorageKey}
+      profileMessage={profileMessage}
+    />
   );
 
-  const renderSettingsModal = () => {
-    if (!isSettingsOpen) return null;
-    return (
-      <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-xl"
-        onClick={() => setIsSettingsOpen(false)}
-      >
-        <div
-          className={cn('w-full max-w-sm space-y-6 rounded-3xl p-6', palette.surfaceMuted)}
-          onClick={(event) => event.stopPropagation()}
-        >
-          <div className="flex items-center justify-between">
-            <h3 className={cn('text-lg font-semibold', textPalette.primary)}>Settings</h3>
-            <button
-              type="button"
-              onClick={() => setIsSettingsOpen(false)}
-              className={cn(buttonBase, buttonPalette.muted, 'h-9 w-9 justify-center rounded-full px-0 text-base')}
-              aria-label="Close settings"
-            >
-              ×
-            </button>
-          </div>
-          <div className="space-y-5">
-            <div className="space-y-2">
-              <span className={cn('text-xs uppercase tracking-[0.3em]', textPalette.secondary)}>Theme</span>
-              {themeToggleButton}
-            </div>
-            <div className="space-y-2">
-              <span className={cn('text-xs uppercase tracking-[0.3em]', textPalette.secondary)}>Music</span>
-              {musicToggleButton}
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const renderDeckModal = () => {
-    if (!isDeckModalOpen) return null;
-
-    const selectedPreset = getDeckPresetById(pendingDeckId);
-    const canStart = isDeckUnlocked(currentProfile, selectedPreset);
-
-    return (
-      <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-xl"
-        onClick={handleDeckCancel}
-      >
-        <div
-          className={cn('w-full max-w-4xl space-y-6 rounded-3xl p-8', palette.surfaceMuted)}
-          onClick={(event) => event.stopPropagation()}
-        >
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h3 className={cn('text-xl font-semibold', textPalette.primary)}>Choose Your Deck</h3>
-              <p className={cn('mt-2 text-sm', textPalette.secondary)}>
-                Locked decks unlock on each profile as you hit their milestone requirement.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={handleDeckCancel}
-              className={cn(buttonBase, buttonPalette.muted, 'h-9 w-9 justify-center rounded-full px-0 text-base')}
-              aria-label="Close deck selection"
-            >
-              ×
-            </button>
-          </div>
-          <div className="grid gap-4 md:grid-cols-3">
-            {deckPresets.map((preset) => {
-              const unlocked = isDeckUnlocked(currentProfile, preset);
-              const isSelected = pendingDeckId === preset.id;
-              const modifiers = preset.modifiers ?? {};
-              const modifierLines: string[] = [];
-
-              if (modifiers.startingBank) {
-                modifierLines.push(
-                  `Start with +${formatDisplayNumber(modifiers.startingBank)} bank.`
-                );
-              }
-              if (modifiers.extraDraws) {
-                modifierLines.push(
-                  `+${modifiers.extraDraws} draw${modifiers.extraDraws === 1 ? '' : 's'} each round.`
-                );
-              }
-              if (modifiers.flatBonus) {
-                modifierLines.push(`+${modifiers.flatBonus} flat score per draw.`);
-              }
-              if (modifiers.interestBonus) {
-                modifierLines.push(
-                  `+${(modifiers.interestBonus * 100).toFixed(0)}% interest on banked points.`
-                );
-              }
-              if (modifierLines.length === 0) {
-                modifierLines.push('Standard odds. No modifiers.');
-              }
-
-              const badgeClasses = unlocked
-                ? theme === 'dark'
-                  ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200'
-                  : 'border-emerald-300 bg-emerald-50 text-emerald-700'
-                : theme === 'dark'
-                  ? 'border-slate-700 bg-slate-950 text-slate-400'
-                  : 'border-slate-200 bg-slate-100 text-slate-500';
-
-              const cardHighlightClasses = theme === 'dark'
-                ? 'bg-slate-950/70 hover:border-sky-400/60 hover:bg-slate-900/70'
-                : 'bg-white/90 hover:border-sky-300 hover:bg-sky-50';
-
-              return (
-                <button
-                  key={preset.id}
-                  type="button"
-                  onClick={() => {
-                    if (unlocked) {
-                      setPendingDeckId(preset.id);
-                    }
-                  }}
-                  disabled={!unlocked}
-                  className={cn(
-                    'flex h-full flex-col gap-3 rounded-2xl border px-5 py-6 text-left transition-all duration-200',
-                    palette.borderSubtle,
-                    cardHighlightClasses,
-                    isSelected &&
-                      (theme === 'dark'
-                        ? 'border-sky-400 bg-sky-500/15 shadow-[0_22px_55px_rgba(56,189,248,0.25)]'
-                        : 'border-sky-300 bg-sky-100 shadow-[0_20px_48px_rgba(59,130,246,0.18)]'),
-                    !unlocked && 'cursor-not-allowed opacity-60'
-                  )}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <span className={cn('text-lg font-semibold', textPalette.primary)}>
-                      {preset.name}
-                    </span>
-                    <span
-                      className={cn(
-                        'rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide',
-                        badgeClasses
-                      )}
-                    >
-                      {unlocked ? 'Unlocked' : 'Locked'}
-                    </span>
-                  </div>
-                  <div className={cn('text-sm leading-relaxed', textPalette.secondary)}>
-                    {preset.description}
-                  </div>
-                  <ul className="space-y-1 text-sm">
-                    {modifierLines.map((line, index) => (
-                      <li key={index} className={cn(textPalette.secondary)}>
-                        {line}
-                      </li>
-                    ))}
-                  </ul>
-                  {!unlocked && preset.requirement && (
-                    <div className={cn('text-xs font-semibold uppercase tracking-wide', textPalette.dangerSoft)}>
-                      {preset.requirement.label}
-                    </div>
-                  )}
-                  {isSelected && unlocked && (
-                    <div className={cn('text-xs uppercase tracking-[0.3em]', textPalette.accent)}>
-                      Selected
-                    </div>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-          <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
-            <button
-              type="button"
-              onClick={handleDeckCancel}
-              className={cn(buttonBase, buttonPalette.muted, 'w-full sm:w-auto')}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={handleDeckConfirm}
-              disabled={!canStart}
-              className={cn(
-                buttonBase,
-                canStart ? buttonPalette.accent : disabledButtonClasses,
-                'w-full sm:w-auto'
-              )}
-            >
-              Start Run
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const renderShopTransitionOverlay = () => (
-    <div className={cn('min-h-screen flex flex-col items-center justify-center gap-6 p-6', palette.shell)}>
-      <div className={cn('mx-auto w-full max-w-xl rounded-3xl px-10 py-10 text-center space-y-6 transition-all duration-300', palette.surfaceMuted)}>
-        <div className={cn('text-sm uppercase tracking-[0.4em]', textPalette.secondary)}>Round Cleared</div>
-        <div className={cn('text-3xl font-bold', textPalette.positive)}>Counting Rewards...</div>
-        <p className={cn('text-lg leading-relaxed', textPalette.secondary)}>
-          {shopTransitionMessage ?? 'Adding up draws, doubles, and interest for the bank...'}
-        </p>
-        <div className={cn('text-sm', textPalette.secondary)}>Opening upgrade shop</div>
-      </div>
-      <div className="flex flex-wrap items-center justify-center gap-3">
-        {settingsButton}
-      </div>
-    </div>
+  const shopTransitionOverlay = (
+    <ShopTransitionOverlay
+      palette={palette}
+      textPalette={textPalette}
+      settingsButton={settingsButton}
+      message={shopTransitionMessage}
+    />
   );
 
-  const renderShop = () => (
-    <div className={cn('min-h-screen flex flex-col gap-8 lg:flex-row', palette.shell)}>
-      <div className={cn('w-full max-w-xl space-y-8 p-8 lg:max-w-sm', palette.panelLeft)}>
-        <div className="space-y-3">
-          <div className={cn('text-xs uppercase tracking-wider', textPalette.secondary)}>
-            Round Cleared
-          </div>
-          <div className={cn('text-4xl font-bold', textPalette.positive)}>
-            Round {roundNumber}
-            {isBossRound(roundNumber + 1) && (
-              <span className={cn('ml-3 text-xl', textPalette.danger)}>⚠️ Boss Next!</span>
-            )}
-          </div>
-          <p className={cn('text-sm leading-relaxed', textPalette.secondary)}>
-            You banked {formatDisplayNumber(roundScore)} points. Spend some now or roll them into the
-            next round.
-          </p>
-        </div>
-        <div className={cn('rounded-2xl p-6 space-y-3', palette.surfaceCard)}>
-          <div className={cn('text-xs uppercase tracking-wider', textPalette.secondary)}>Bank</div>
-          <div className={cn('text-3xl font-semibold', textPalette.accent)}>
-            {formatDisplayNumber(bank)}
-          </div>
-          <div className={cn('text-sm font-semibold', textPalette.positive)}>
-            {(interestRate * 100).toFixed(0)}% interest next round
-          </div>
-          <div className={cn('text-xs', textPalette.secondary)}>
-            Unspent points stay banked between rounds.
-          </div>
-        </div>
-        <button onClick={proceedToNextRound} className={cn(buttonBase, buttonPalette.positive, 'w-full')}>
-          Continue to Round {roundNumber + 1}
-        </button>
-        <button onClick={resetToMenu} className={cn(buttonBase, buttonPalette.muted, 'w-full')}>
-          Return to Main Menu
-        </button>
-        {shopMessage && <div className={cn('text-sm', textPalette.secondary)}>{shopMessage}</div>}
-        <div className="flex flex-wrap items-center gap-3">
-          {settingsButton}
-        </div>
-      </div>
-      <div className={cn('flex-1 overflow-y-auto px-6 pb-16 pt-14 lg:px-12', palette.panelRight)}>
-        <h2 className={cn('mb-6 text-3xl font-bold', textPalette.accent)}>Upgrade Shop</h2>
-        <p className={cn('mb-12 max-w-3xl leading-relaxed', textPalette.secondary)}>
-          Grab the upgrades that fit your build, stack the bank, then jump back into the next round.
-        </p>
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
-          {shopChoices.map((choice) => {
-            const styles = rarityStyles[choice.rarity];
-            return (
-              <div
-                key={choice.id}
-                className={cn(
-                  'flex h-full flex-col gap-4 rounded-2xl p-6 transition-shadow duration-200 hover:-translate-y-1',
-                  palette.surfaceCard,
-                  styles.card
-                )}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="text-3xl leading-none">{choice.icon}</div>
-                  <div className="flex-1">
-                    <div className={cn('text-lg font-semibold', textPalette.primary)}>{choice.name}</div>
-                    <div className={cn('mt-1 text-sm leading-snug', textPalette.secondary)}>
-                      {choice.description}
-                    </div>
-                  </div>
-                  <div className={cn('rounded-full px-2 py-1 text-[11px] font-bold', styles.badge)}>
-                    {choice.rarity.toUpperCase()}
-                  </div>
-                </div>
-                <ul className={cn('space-y-2 text-sm', textPalette.secondary)}>
-                  {choice.effects.map((effect, index) => {
-                    if (effect.type === 'extraDraws') {
-                      return <li key={index}>+{effect.value} draw(s) per round</li>;
-                    }
-                    if (effect.type === 'flatBonus') {
-                      return <li key={index}>+{effect.value} flat points every draw</li>;
-                    }
-                    if (effect.type === 'interestRate') {
-                      return (
-                        <li key={index}>+{(effect.value * 100).toFixed(0)}% interest on bank</li>
-                      );
-                    }
-                    if (effect.type === 'betMultiplier') {
-                      const betLabel = betOptionMap.get(effect.betId)?.label ?? effect.betId;
-                      return (
-                        <li key={index}>
-                          +{effect.value.toFixed(2)}× multiplier to {betLabel}
-                        </li>
-                      );
-                    }
-                    if (effect.type === 'synergyMultiplier') {
-                      return (
-                        <li key={index}>
-                          +{effect.value.toFixed(2)}× per {effect.tag} item
-                        </li>
-                      );
-                    }
-                    if (effect.type === 'transformation') {
-                      return (
-                        <li key={index}>
-                          Transformation piece {effect.piece}/3
-                        </li>
-                      );
-                    }
-                    if (effect.type === 'conditionalBonus') {
-                      if (effect.bankReward) {
-                        return <li key={index}>+{effect.bankReward} bank on hit</li>;
-                      }
-                      if (effect.bankPenalty) {
-                        return <li key={index}>-{effect.bankPenalty} bank on miss</li>;
-                      }
-                      if (effect.multiplier) {
-                        return <li key={index}>+{effect.multiplier.toFixed(1)}× on {effect.condition}</li>;
-                      }
-                    }
-                    if (effect.type === 'comboCounter') {
-                      return (
-                        <li key={index}>
-                          +{effect.value.toFixed(2)}× per consecutive hit
-                        </li>
-                      );
-                    }
-                    if (effect.type === 'globalMultiplier') {
-                      return (
-                        <li key={index}>
-                          +{effect.value.toFixed(2)}× to ALL bets
-                        </li>
-                      );
-                    }
-                    return null;
-                  })}
-                </ul>
-                <div
-                  className={cn(
-                    'mt-auto flex items-center justify-between border-t pt-4',
-                    palette.borderSubtle
-                  )}
-                >
-                  <div className={cn('text-sm', textPalette.secondary)}>Cost</div>
-                  <div className={cn('text-lg font-semibold', textPalette.accent)}>
-                    {formatDisplayNumber(choice.cost)}
-                  </div>
-                </div>
-                <button
-                  onClick={() => buyUpgrade(choice)}
-                  className={cn(buttonBase, buttonPalette.accent, 'w-full')}
-                >
-                  Buy Upgrade
-                </button>
-              </div>
-            );
-          })}
-          {shopChoices.length === 0 && (
-            <div className={cn('col-span-full text-sm', textPalette.secondary)}>
-              You picked up every upgrade. Continue to the next round when ready.
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
+  const gameOverOverlay = (
+    <GameOverOverlay
+      palette={palette}
+      textPalette={textPalette}
+      buttonPalette={buttonPalette}
+      buttonBase={buttonBase}
+      formatDisplayNumber={formatDisplayNumber}
+      bank={bank}
+      roundNumber={roundNumber}
+      ownedUpgradeCount={ownedUpgrades.length}
+      interestRate={interestRate}
+      lastDrawnCard={lastDrawnCard}
+      onStartNewRun={startNewRun}
+      onReturnToMenu={resetToMenu}
+      settingsButton={settingsButton}
+    />
   );
 
   const renderGameplay = () => (
@@ -3679,9 +1895,9 @@ const resetGameState = () => {
   if (gamePhase === 'menu') {
     return (
       <>
-        {renderMenu()}
-        {renderSettingsModal()}
-        {renderDeckModal()}
+        {menuScreen}
+        {settingsModal}
+        {deckSelectionModal}
       </>
     );
   }
@@ -3689,9 +1905,9 @@ const resetGameState = () => {
   if (gamePhase === 'shopTransition') {
     return (
       <>
-        {renderShopTransitionOverlay()}
-        {renderSettingsModal()}
-        {renderDeckModal()}
+        {shopTransitionOverlay}
+        {settingsModal}
+        {deckSelectionModal}
       </>
     );
   }
@@ -3699,9 +1915,9 @@ const resetGameState = () => {
   if (gamePhase === 'shop') {
     return (
       <>
-        {renderShop()}
-        {renderSettingsModal()}
-        {renderDeckModal()}
+        {shopView}
+        {settingsModal}
+        {deckSelectionModal}
       </>
     );
   }
@@ -3710,9 +1926,9 @@ const resetGameState = () => {
     return (
       <>
         {renderGameplay()}
-        {renderGameOverOverlay()}
-        {renderSettingsModal()}
-        {renderDeckModal()}
+        {gameOverOverlay}
+        {settingsModal}
+        {deckSelectionModal}
       </>
     );
   }
@@ -3720,8 +1936,8 @@ const resetGameState = () => {
   return (
     <>
       {renderGameplay()}
-      {renderSettingsModal()}
-      {renderDeckModal()}
+      {settingsModal}
+      {deckSelectionModal}
     </>
   );
 }
