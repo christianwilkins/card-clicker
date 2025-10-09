@@ -2,15 +2,9 @@
 
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-// Old imports - commented out, using local copies now
-// import Card, { type CardType, type Rank, type Suit } from '@/components/Card';
-// import RecentCardItem, { type RecentCardStatus } from '@/components/RecentCardItem';
-// import { formatDisplayNumber, formatSignedDisplayNumber } from '@/lib/formatNumber';
-
-import Card from './CardComponent';
-import RecentCardItem from './RecentCardItemComponent';
-import { formatDisplayNumber, formatSignedDisplayNumber } from './utils';
-import type { CardType, Rank, Suit, RecentCardStatus } from './types';
+import Card, { type CardType, type Rank, type Suit } from '@/components/Card';
+import RecentCardItem, { type RecentCardStatus } from '@/components/RecentCardItem';
+import { formatDisplayNumber, formatSignedDisplayNumber } from '@/lib/formatNumber';
 
 type GamePhase = 'menu' | 'gameplay' | 'shopTransition' | 'shop' | 'gameOver';
 type RoundOutcome = 'active' | 'won' | 'lost';
@@ -2758,38 +2752,18 @@ const resetGameState = () => {
 
           {/* Main Action */}
           <div className="space-y-3">
-            {(() => {
-              // Check if there's a saved game in progress
-              const hasSavedGame = activeProfileId && typeof window !== 'undefined' &&
-                localStorage.getItem(getProfileStorageKey(activeProfileId));
-
-              return hasSavedGame ? (
-                <>
-                  <button
-                    onClick={() => {
-                      setGamePhase('gameplay');
-                      setReadyToPersist(true);
-                    }}
-                    className={cn(buttonBase, buttonPalette.accent, 'w-full py-4 text-lg')}
-                  >
-                    Continue Run
-                  </button>
-                  <button
-                    onClick={() => setIsDeckModalOpen(true)}
-                    className={cn(buttonBase, buttonPalette.accentSecondary, 'w-full')}
-                  >
-                    Start New Run
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={() => setIsDeckModalOpen(true)}
-                  className={cn(buttonBase, buttonPalette.accent, 'w-full py-4 text-lg')}
-                >
-                  Start New Run
-                </button>
-              );
-            })()}
+            <button
+              onClick={startNewRun}
+              className={cn(buttonBase, buttonPalette.accent, 'w-full py-4 text-lg')}
+            >
+              Start New Run
+            </button>
+            <button
+              onClick={() => setIsDeckModalOpen(true)}
+              className={cn(buttonBase, buttonPalette.accentSecondary, 'w-full')}
+            >
+              Choose Deck
+            </button>
           </div>
 
           {/* Profile Info */}
@@ -2865,6 +2839,206 @@ const resetGameState = () => {
           <div className="flex justify-center">
             {settingsButton}
           </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderOldProfileSection = () => (
+        <section className={cn('rounded-3xl p-8 space-y-6', palette.surfaceCard)}>
+          <div className="space-y-2">
+            <span className={cn('text-xs uppercase tracking-[0.3em]', textPalette.secondary)}>
+              Active Profile
+            </span>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className={cn('text-2xl font-semibold', textPalette.primary)}>
+                {currentProfile?.name ?? 'No Profile'}
+              </h2>
+              <span className={cn('text-sm', textPalette.secondary)}>
+                Decks Unlocked:{' '}
+                {currentProfile ? currentProfile.unlockedDecks.length : 0}/{deckPresets.length}
+              </span>
+            </div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+            <div className="space-y-2">
+              <label
+                htmlFor="profile-name"
+                className={cn('text-xs uppercase tracking-[0.3em]', textPalette.secondary)}
+              >
+                Save Current Run As
+              </label>
+              <input
+                id="profile-name"
+                type="text"
+                value={newProfileName}
+                onChange={handleProfileNameChange}
+                placeholder="Enter profile name"
+                className={cn(
+                  'w-full rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400',
+                  palette.borderSubtle,
+                  theme === 'dark' ? 'bg-slate-950/70 text-slate-100' : 'bg-white text-slate-900'
+                )}
+              />
+            </div>
+            <button
+              onClick={handleSaveProfile}
+              className={cn(buttonBase, buttonPalette.accent, 'w-full sm:w-auto')}
+            >
+              Save Profile
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            <label
+              htmlFor="profile-select"
+              className={cn('text-xs uppercase tracking-[0.3em]', textPalette.secondary)}
+            >
+              Saved Profiles
+            </label>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <select
+                id="profile-select"
+                value={profileSelectionId ?? ''}
+                onChange={handleProfileSelectionChange}
+                className={cn(
+                  'w-full rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400',
+                  palette.borderSubtle,
+                  theme === 'dark' ? 'bg-slate-950/70 text-slate-100' : 'bg-white text-slate-900'
+                )}
+              >
+                {profiles.length === 0 && <option value="">No saved profiles</option>}
+                {profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name}
+                  </option>
+                ))}
+              </select>
+              <div className="flex w-full gap-3 sm:w-auto">
+                <button
+                  onClick={handleLoadProfile}
+                  className={cn(buttonBase, buttonPalette.accentSecondary, 'flex-1')}
+                  disabled={!profileSelectionId || profileSelectionId === activeProfileId}
+                >
+                  Load
+                </button>
+                <button
+                  onClick={handleDeleteProfile}
+                  className={cn(buttonBase, buttonPalette.danger, 'flex-1')}
+                  disabled={!profileSelectionId || profiles.length <= 1}
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <span className={cn('text-xs uppercase tracking-[0.3em]', textPalette.secondary)}>
+              Deck Unlocks
+            </span>
+            <ul className="space-y-2 text-sm">
+              {deckPresets.map((preset) => {
+                const unlocked = isDeckUnlocked(currentProfile, preset);
+                const statusLabel = unlocked
+                  ? 'Unlocked'
+                  : preset.requirement?.label ?? 'Locked';
+                return (
+                  <li key={preset.id} className="flex items-center justify-between gap-3">
+                    <span className={cn('font-medium', textPalette.primary)}>{preset.name}</span>
+                    <span
+                      className={cn(
+                        'text-xs font-semibold uppercase tracking-wide',
+                        unlocked ? textPalette.positive : textPalette.secondary
+                      )}
+                    >
+                      {statusLabel}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+
+          {profileMessage && (
+            <div className={cn('text-sm', textPalette.secondary)}>{profileMessage}</div>
+          )}
+        </section>
+
+        <div className="grid gap-6 lg:grid-cols-3">
+          <section className={cn('rounded-3xl p-8 space-y-6 lg:col-span-2', palette.surfaceCard)}>
+            <div className="flex items-center justify-between gap-3">
+              <h2 className={cn('text-2xl font-semibold', textPalette.primary)}>Patch Notes</h2>
+              <span className={cn('text-xs uppercase tracking-wide', textPalette.secondary)}>
+                v0.4 refresh
+              </span>
+            </div>
+            <ul className={cn('space-y-4 text-sm leading-relaxed', textPalette.secondary)}>
+              <li className="flex items-start gap-3">
+                <span
+                  className={cn(
+                    'grid h-7 w-7 place-content-center rounded-xl text-sm font-semibold',
+                    palette.bulletIcon
+                  )}
+                >
+                  ♪
+                </span>
+                <span>
+                  New upbeat synth loop and richer lighting keep long click streaks lively.
+                </span>
+              </li>
+              <li className="flex items-start gap-3">
+                <span
+                  className={cn(
+                    'grid h-7 w-7 place-content-center rounded-xl text-sm font-semibold',
+                    palette.bulletIcon
+                  )}
+                >
+                  Σ
+                </span>
+                <span>Score displays flip into scientific notation earlier to tame giant bankrolls.</span>
+              </li>
+              <li className="flex items-start gap-3">
+                <span
+                  className={cn(
+                    'grid h-7 w-7 place-content-center rounded-xl text-sm font-semibold',
+                    palette.bulletIcon
+                  )}
+                >
+                  ⚙
+                </span>
+                <span>
+                  Manual light/dark toggle and refreshed menu styling for quicker session setup.
+                </span>
+              </li>
+            </ul>
+          </section>
+
+          <section className={cn('rounded-3xl p-6 space-y-5', palette.surfaceCard)}>
+            <h2 className={cn('text-lg font-semibold', textPalette.primary)}>Run Actions</h2>
+            <p className={cn('text-sm', textPalette.secondary)}>
+              Ready to bank another streak or wipe the slate? Use these quick controls before diving in.
+            </p>
+            <div className="space-y-3">
+              <button
+                onClick={startNewRun}
+                className={cn(buttonBase, buttonPalette.accent, 'w-full')}
+              >
+                Launch Fresh Run
+              </button>
+              <button
+                onClick={clearSavedData}
+                className={cn(buttonBase, buttonPalette.muted, 'w-full')}
+              >
+                Clear Local Save
+              </button>
+            </div>
+            <div className={cn('text-xs leading-relaxed', textPalette.secondary)}>
+              Clearing the save removes stored relics and bank totals. Theme and audio preferences stay
+              put.
+            </div>
+          </section>
         </div>
       </div>
     </div>
