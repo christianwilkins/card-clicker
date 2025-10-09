@@ -54,6 +54,9 @@ interface StoredGameState {
   purchasedShopIds: string[];
   activeDeckId: string;
   deckModifiers: DeckModifier;
+  comboStreak?: number; // For combo counter items
+  lastBetHit?: boolean; // For conditional items that trigger on miss/hit
+  transformationsCompleted?: string[]; // Track which transformations are active
 }
 
 interface BetOption {
@@ -70,7 +73,12 @@ type UpgradeEffect =
   | { type: 'extraDraws'; value: number }
   | { type: 'betMultiplier'; betId: string; value: number }
   | { type: 'flatBonus'; value: number }
-  | { type: 'interestRate'; value: number };
+  | { type: 'interestRate'; value: number }
+  | { type: 'synergyMultiplier'; tag: string; value: number } // Bonus per other item with matching tag
+  | { type: 'transformation'; set: string; piece: number } // Collect 3 for transformation
+  | { type: 'conditionalBonus'; condition: 'onHit' | 'onMiss' | 'streak'; multiplier?: number; flatBonus?: number; bankReward?: number; bankPenalty?: number }
+  | { type: 'comboCounter'; value: number; decay: 'onMiss' | 'perRound' } // Stacking bonus that resets
+  | { type: 'globalMultiplier'; value: number }; // Applies to all bets
 
 interface ShopUpgrade {
   id: string;
@@ -80,6 +88,7 @@ interface ShopUpgrade {
   cost: number;
   icon: string;
   effects: UpgradeEffect[];
+  tags?: string[]; // For synergy calculations
 }
 
 interface OwnedUpgrade extends ShopUpgrade {
@@ -117,6 +126,70 @@ interface PlayerProfile {
   unlockedDecks: string[];
   bestRound: number;
 }
+
+interface BossModifier {
+  id: string;
+  name: string;
+  description: string;
+  targetMultiplier: number; // Multiplies the round target
+  effect?: {
+    type: 'disableBets' | 'reduceFlatBonus' | 'reduceMultipliers' | 'bankDrain' | 'noInterest';
+    value?: number;
+    betIds?: string[];
+  };
+}
+
+const bossModifiers: BossModifier[] = [
+  {
+    id: 'boss-purist',
+    name: 'The Purist',
+    description: 'Only exact suit and special bets available. Color bets disabled.',
+    targetMultiplier: 1.3,
+    effect: {
+      type: 'disableBets',
+      betIds: ['color-red', 'color-black', 'rank-number', 'rank-face', 'value-high', 'value-low']
+    }
+  },
+  {
+    id: 'boss-accountant',
+    name: 'The Accountant',
+    description: 'Interest is disabled. Flat bonuses reduced by 50%.',
+    targetMultiplier: 1.2,
+    effect: {
+      type: 'noInterest'
+    }
+  },
+  {
+    id: 'boss-multiplier-curse',
+    name: 'The Dampener',
+    description: 'All bet multipliers reduced by 50%.',
+    targetMultiplier: 1.4,
+    effect: {
+      type: 'reduceMultipliers',
+      value: 0.5
+    }
+  },
+  {
+    id: 'boss-drain',
+    name: 'The Tax Collector',
+    description: 'Lose 8 bank per missed bet.',
+    targetMultiplier: 1.25,
+    effect: {
+      type: 'bankDrain',
+      value: 8
+    }
+  },
+  {
+    id: 'boss-flat-curse',
+    name: 'The Nullifier',
+    description: 'Flat bonus per draw reduced to 0.',
+    targetMultiplier: 1.3,
+    effect: {
+      type: 'reduceFlatBonus',
+      value: 0
+    }
+  }
+];
 
 const suits: Suit[] = ['♠', '♥', '♦', '♣'];
 const ranks: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
@@ -224,6 +297,38 @@ function createProbabilityBenderDeck(): CardType[] {
   return deck;
 }
 
+function createMinimalistDeck(): CardType[] {
+  const deck: CardType[] = [];
+  const premiumRanks: Rank[] = ['9', '10', 'J', 'Q', 'K', 'A'];
+  for (const suit of suits) {
+    for (const rank of premiumRanks) {
+      deck.push(createCard(suit, rank));
+    }
+  }
+  deck.push(createJokerCard('red', 'joker-red-mini'));
+  deck.push(createJokerCard('black', 'joker-black-mini'));
+  return deck;
+}
+
+function createChaosDeck(): CardType[] {
+  const deck: CardType[] = [];
+  for (const suit of suits) {
+    for (const rank of ranks) {
+      deck.push(createCard(suit, rank));
+      deck.push(createCard(suit, rank, 1));
+    }
+  }
+  for (let i = 0; i < 6; i++) {
+    deck.push(createJokerCard(i % 2 === 0 ? 'red' : 'black', `joker-chaos-${i}`));
+  }
+  return deck;
+}
+
+function createBankerDeck(): CardType[] {
+  const deck = createStandardDeck();
+  return deck;
+}
+
 const deckPresets: DeckPreset[] = [
   {
     id: 'balanced',
@@ -249,6 +354,30 @@ const deckPresets: DeckPreset[] = [
     modifiers: { extraDraws: 1, interestBonus: 0.02 },
     buildDeck: createProbabilityBenderDeck,
     requirement: { type: 'bestRound', value: 10, label: 'Reach Round 10' }
+  },
+  {
+    id: 'minimalist',
+    name: 'Minimalist Deck',
+    description: 'Only 26 premium cards (9+). Start with +2 draws and higher multipliers.',
+    modifiers: { extraDraws: 2, flatBonus: 6 },
+    buildDeck: createMinimalistDeck,
+    requirement: { type: 'bestRound', value: 7, label: 'Reach Round 7' }
+  },
+  {
+    id: 'chaos',
+    name: 'Chaos Deck',
+    description: '110 cards with 6 Jokers. Complete randomness, +1 draw. High variance chaos.',
+    modifiers: { extraDraws: 1, flatBonus: 3 },
+    buildDeck: createChaosDeck,
+    requirement: { type: 'bestRound', value: 12, label: 'Reach Round 12' }
+  },
+  {
+    id: 'banker',
+    name: 'Banker\'s Deck',
+    description: 'Start with 200 bank and +5% interest, but -1 draw. Play the long game.',
+    modifiers: { startingBank: 200, interestBonus: 0.05, extraDraws: -1 },
+    buildDeck: createBankerDeck,
+    requirement: { type: 'bestRound', value: 15, label: 'Reach Round 15' }
   }
 ];
 
@@ -417,7 +546,8 @@ const upgradeTemplates: ShopUpgrade[] = [
     rarity: 'common',
     cost: 65,
     icon: '🔍',
-    effects: [{ type: 'betMultiplier', betId: 'color-red', value: 0.2 }]
+    effects: [{ type: 'betMultiplier', betId: 'color-red', value: 0.2 }],
+    tags: ['red-synergy']
   },
   {
     id: 'interest-boost-0',
@@ -426,7 +556,8 @@ const upgradeTemplates: ShopUpgrade[] = [
     rarity: 'common',
     cost: 70,
     icon: '🧿',
-    effects: [{ type: 'interestRate', value: 0.02 }]
+    effects: [{ type: 'interestRate', value: 0.02 }],
+    tags: ['interest-synergy']
   },
   {
     id: 'extra-draw-1',
@@ -453,7 +584,8 @@ const upgradeTemplates: ShopUpgrade[] = [
     rarity: 'rare',
     cost: 190,
     icon: '🗡️',
-    effects: [{ type: 'betMultiplier', betId: 'color-black', value: 0.6 }]
+    effects: [{ type: 'betMultiplier', betId: 'color-black', value: 0.6 }],
+    tags: ['black-synergy']
   },
   {
     id: 'bet-bonus-face',
@@ -498,7 +630,8 @@ const upgradeTemplates: ShopUpgrade[] = [
     rarity: 'uncommon',
     cost: 150,
     icon: '💎',
-    effects: [{ type: 'betMultiplier', betId: 'color-red', value: 0.4 }]
+    effects: [{ type: 'betMultiplier', betId: 'color-red', value: 0.4 }],
+    tags: ['red-synergy']
   },
   {
     id: 'bet-bonus-high',
@@ -543,7 +676,8 @@ const upgradeTemplates: ShopUpgrade[] = [
     rarity: 'uncommon',
     cost: 160,
     icon: '🔮',
-    effects: [{ type: 'interestRate', value: 0.03 }]
+    effects: [{ type: 'interestRate', value: 0.03 }],
+    tags: ['interest-synergy']
   },
   {
     id: 'interest-boost-2',
@@ -552,7 +686,8 @@ const upgradeTemplates: ShopUpgrade[] = [
     rarity: 'rare',
     cost: 240,
     icon: '🏦',
-    effects: [{ type: 'interestRate', value: 0.05 }]
+    effects: [{ type: 'interestRate', value: 0.05 }],
+    tags: ['interest-synergy']
   },
   {
     id: 'interest-boost-legendary',
@@ -561,7 +696,193 @@ const upgradeTemplates: ShopUpgrade[] = [
     rarity: 'legendary',
     cost: 360,
     icon: '⏱️',
-    effects: [{ type: 'interestRate', value: 0.08 }]
+    effects: [{ type: 'interestRate', value: 0.08 }],
+    tags: ['interest-synergy']
+  },
+  // SYNERGY ITEMS - Get bonuses for collecting related items
+  {
+    id: 'synergy-red-hunter',
+    name: 'Crimson Cascade',
+    description: 'Red bet gains +0.15× for each other red-focused item you own.',
+    rarity: 'rare',
+    cost: 210,
+    icon: '🌊',
+    effects: [
+      { type: 'betMultiplier', betId: 'color-red', value: 0.3 },
+      { type: 'synergyMultiplier', tag: 'red-synergy', value: 0.15 }
+    ],
+    tags: ['red-synergy']
+  },
+  {
+    id: 'synergy-black-hunter',
+    name: 'Obsidian Chain',
+    description: 'Black bet gains +0.15× for each other black-focused item you own.',
+    rarity: 'rare',
+    cost: 210,
+    icon: '⛓️',
+    effects: [
+      { type: 'betMultiplier', betId: 'color-black', value: 0.3 },
+      { type: 'synergyMultiplier', tag: 'black-synergy', value: 0.15 }
+    ],
+    tags: ['black-synergy']
+  },
+  {
+    id: 'synergy-interest-compound',
+    name: 'Exponential Vault',
+    description: 'Gain +1% interest for each other interest item owned.',
+    rarity: 'uncommon',
+    cost: 140,
+    icon: '📈',
+    effects: [
+      { type: 'interestRate', value: 0.02 },
+      { type: 'synergyMultiplier', tag: 'interest-synergy', value: 0.01 }
+    ],
+    tags: ['interest-synergy']
+  },
+  // TRANSFORMATION ITEMS - Collect 3 to transform
+  {
+    id: 'transform-gambler-1',
+    name: 'Gambler\'s Die',
+    description: '[Gambler 1/3] Extreme bets (Joker, Ace) gain +0.5× multiplier. Transform: +2.0× on extremes.',
+    rarity: 'rare',
+    cost: 180,
+    icon: '🎲',
+    effects: [
+      { type: 'betMultiplier', betId: 'special-joker', value: 0.5 },
+      { type: 'betMultiplier', betId: 'special-ace', value: 0.5 },
+      { type: 'transformation', set: 'gambler', piece: 1 }
+    ]
+  },
+  {
+    id: 'transform-gambler-2',
+    name: 'Gambler\'s Coin',
+    description: '[Gambler 2/3] High Value bets gain +0.4× multiplier. Transform: +2.0× on extremes.',
+    rarity: 'rare',
+    cost: 180,
+    icon: '🪙',
+    effects: [
+      { type: 'betMultiplier', betId: 'value-high', value: 0.4 },
+      { type: 'transformation', set: 'gambler', piece: 2 }
+    ]
+  },
+  {
+    id: 'transform-gambler-3',
+    name: 'Gambler\'s Charm',
+    description: '[Gambler 3/3] Gain +1 draw. Transform: +2.0× on extremes.',
+    rarity: 'rare',
+    cost: 180,
+    icon: '🍀',
+    effects: [
+      { type: 'extraDraws', value: 1 },
+      { type: 'transformation', set: 'gambler', piece: 3 }
+    ]
+  },
+  {
+    id: 'transform-banker-1',
+    name: 'Banker\'s Ledger',
+    description: '[Banker 1/3] Gain +3% interest. Transform: +8% interest total.',
+    rarity: 'uncommon',
+    cost: 130,
+    icon: '📒',
+    effects: [
+      { type: 'interestRate', value: 0.03 },
+      { type: 'transformation', set: 'banker', piece: 1 }
+    ]
+  },
+  {
+    id: 'transform-banker-2',
+    name: 'Banker\'s Seal',
+    description: '[Banker 2/3] Every draw awards +5 points. Transform: +8% interest total.',
+    rarity: 'uncommon',
+    cost: 130,
+    icon: '🔏',
+    effects: [
+      { type: 'flatBonus', value: 5 },
+      { type: 'transformation', set: 'banker', piece: 2 }
+    ]
+  },
+  {
+    id: 'transform-banker-3',
+    name: 'Banker\'s Vault',
+    description: '[Banker 3/3] Gain +2% interest. Transform: +8% interest total.',
+    rarity: 'uncommon',
+    cost: 130,
+    icon: '🏦',
+    effects: [
+      { type: 'interestRate', value: 0.02 },
+      { type: 'transformation', set: 'banker', piece: 3 }
+    ]
+  },
+  // CONDITIONAL / RISK-REWARD ITEMS
+  {
+    id: 'conditional-double-down',
+    name: 'Double or Nothing',
+    description: 'When you HIT a bet, gain 50 extra bank. When you MISS, lose 15 bank.',
+    rarity: 'rare',
+    cost: 200,
+    icon: '⚡',
+    effects: [
+      { type: 'conditionalBonus', condition: 'onHit', bankReward: 50 },
+      { type: 'conditionalBonus', condition: 'onMiss', bankPenalty: 15 }
+    ]
+  },
+  {
+    id: 'conditional-high-roller',
+    name: 'High Roller\'s Pride',
+    description: 'Extreme bets (Joker, Ace) gain +1.5× multiplier but cost 10 bank.',
+    rarity: 'legendary',
+    cost: 300,
+    icon: '💸',
+    effects: [
+      { type: 'betMultiplier', betId: 'special-joker', value: 1.5 },
+      { type: 'betMultiplier', betId: 'special-ace', value: 1.5 },
+      { type: 'conditionalBonus', condition: 'onHit', bankPenalty: 10 }
+    ]
+  },
+  {
+    id: 'conditional-streak',
+    name: 'Momentum Engine',
+    description: 'Each consecutive hit increases your multiplier by +0.1×. Resets on miss.',
+    rarity: 'legendary',
+    cost: 340,
+    icon: '🔥',
+    effects: [
+      { type: 'comboCounter', value: 0.1, decay: 'onMiss' }
+    ]
+  },
+  {
+    id: 'conditional-comeback',
+    name: 'Underdog Spirit',
+    description: 'After missing a bet, next hit gains +1.0× multiplier.',
+    rarity: 'uncommon',
+    cost: 160,
+    icon: '💪',
+    effects: [
+      { type: 'conditionalBonus', condition: 'onMiss', multiplier: 1.0 }
+    ]
+  },
+  // GLOBAL MULTIPLIERS
+  {
+    id: 'global-amplifier',
+    name: 'Universal Amplifier',
+    description: 'ALL bets gain +0.3× multiplier.',
+    rarity: 'legendary',
+    cost: 380,
+    icon: '✨',
+    effects: [
+      { type: 'globalMultiplier', value: 0.3 }
+    ]
+  },
+  {
+    id: 'global-small',
+    name: 'Lucky Star',
+    description: 'ALL bets gain +0.15× multiplier.',
+    rarity: 'rare',
+    cost: 200,
+    icon: '⭐',
+    effects: [
+      { type: 'globalMultiplier', value: 0.15 }
+    ]
   }
 ];
 
@@ -580,14 +901,40 @@ const getProfileStorageKey = (profileId: string) => `${STORAGE_KEY}-${profileId}
 
 const templateByName = new Map<string, ShopUpgrade>(upgradeTemplates.map((template) => [template.name, template]));
 
+function isBossRound(roundNumber: number): boolean {
+  return roundNumber > 0 && roundNumber % 5 === 0;
+}
+
+function getBossForRound(roundNumber: number): BossModifier | null {
+  if (!isBossRound(roundNumber)) return null;
+  const bossIndex = Math.floor((roundNumber / 5) - 1) % bossModifiers.length;
+  return bossModifiers[bossIndex];
+}
+
 function calculateRoundTarget(roundNumber: number, ownedUpgrades: OwnedUpgrade[]): number {
-  const base = 38 + (roundNumber - 1) * 6;
+  // Quadratic scaling inspired by Balatro for escalating difficulty
+  // Creates urgency and forces players to find multiplicative synergies
+  const baseMultiplier = 1.35;
+  const exponentialComponent = Math.pow(baseMultiplier, roundNumber);
+  const linearComponent = roundNumber * 15;
+  const base = 50 + linearComponent + exponentialComponent;
+
   const bonus = ownedUpgrades.reduce((total, upgrade) => {
-    if (upgrade.rarity === 'legendary') return total + 4;
-    if (upgrade.rarity === 'rare') return total + 2;
+    if (upgrade.rarity === 'legendary') return total + 6;
+    if (upgrade.rarity === 'rare') return total + 3;
+    if (upgrade.rarity === 'uncommon') return total + 1;
     return total;
   }, 0);
-  return Math.max(24, Math.floor(base + bonus));
+
+  let target = Math.max(40, Math.floor(base + bonus));
+
+  // Apply boss multiplier if this is a boss round
+  const boss = getBossForRound(roundNumber);
+  if (boss) {
+    target = Math.floor(target * boss.targetMultiplier);
+  }
+
+  return target;
 }
 
 function getShopSlotCount(roundNumber: number): number {
@@ -609,9 +956,27 @@ function getRarityWeight(rarity: Rarity, roundNumber: number): number {
   }
 }
 
-function generateShopChoices(roundNumber: number): ShopUpgrade[] {
+function generateShopChoices(roundNumber: number, ownedUpgrades: OwnedUpgrade[] = []): ShopUpgrade[] {
   const choices: ShopUpgrade[] = [];
-  const availableTemplates = [...upgradeTemplates];
+
+  // Get the base template IDs of owned upgrades to prevent duplicates
+  const ownedTemplateIds = new Set(
+    ownedUpgrades.map(upgrade => {
+      // Extract the original template ID by removing the unique suffix
+      const match = upgrade.id.match(/^(.+?)-\d+-\d+-[a-f0-9]+$/);
+      return match ? match[1] : upgrade.id;
+    })
+  );
+
+  // Filter out templates that are already owned
+  const availableTemplates = upgradeTemplates.filter(
+    template => !ownedTemplateIds.has(template.id)
+  );
+
+  if (availableTemplates.length === 0) {
+    return []; // No items left to offer
+  }
+
   const slotCount = getShopSlotCount(roundNumber);
 
   const cheapPool = availableTemplates.filter((template) => template.cost <= 120);
@@ -673,6 +1038,8 @@ function getFlatBonus(upgrades: OwnedUpgrade[]): number {
 
 function getBetBonusMap(upgrades: OwnedUpgrade[]): Map<string, number> {
   const map = new Map<string, number>();
+
+  // Base bet multipliers from items
   upgrades.forEach((upgrade) => {
     upgrade.effects
       .filter((effect): effect is Extract<UpgradeEffect, { type: 'betMultiplier' }> => effect.type === 'betMultiplier')
@@ -680,16 +1047,132 @@ function getBetBonusMap(upgrades: OwnedUpgrade[]): Map<string, number> {
         map.set(effect.betId, (map.get(effect.betId) ?? 0) + effect.value);
       });
   });
+
+  // Add synergy bonuses for red/black bets
+  const synergyBonuses = getSynergyBonuses(upgrades);
+  const redSynergy = synergyBonuses.get('red-synergy');
+  const blackSynergy = synergyBonuses.get('black-synergy');
+
+  if (redSynergy) {
+    map.set('color-red', (map.get('color-red') ?? 0) + redSynergy.multiplier);
+  }
+  if (blackSynergy) {
+    map.set('color-black', (map.get('color-black') ?? 0) + blackSynergy.multiplier);
+  }
+
+  // Add transformation bonuses
+  const completedTransformations = getCompletedTransformations(upgrades);
+  const { betMultipliers: transformBonuses } = getTransformationBonuses(completedTransformations);
+
+  transformBonuses.forEach((bonus, betId) => {
+    map.set(betId, (map.get(betId) ?? 0) + bonus);
+  });
+
   return map;
 }
 
 function getInterestBonus(upgrades: OwnedUpgrade[]): number {
-  return upgrades.reduce((total, upgrade) => {
+  let total = upgrades.reduce((acc, upgrade) => {
     const bonus = upgrade.effects
       .filter((effect): effect is Extract<UpgradeEffect, { type: 'interestRate' }> => effect.type === 'interestRate')
       .reduce((sum, effect) => sum + effect.value, 0);
+    return acc + bonus;
+  }, 0);
+
+  // Add synergy bonuses for interest
+  const synergyBonuses = getSynergyBonuses(upgrades);
+  const interestSynergy = synergyBonuses.get('interest-synergy');
+  if (interestSynergy && interestSynergy.interestBonus) {
+    total += interestSynergy.interestBonus;
+  }
+
+  // Add transformation bonuses
+  const completedTransformations = getCompletedTransformations(upgrades);
+  const { interestBonus: transformBonus } = getTransformationBonuses(completedTransformations);
+  total += transformBonus;
+
+  return total;
+}
+
+function getSynergyBonuses(upgrades: OwnedUpgrade[]): Map<string, { betId?: string; interestBonus?: number; multiplier: number }> {
+  const synergies = new Map<string, { betId?: string; interestBonus?: number; multiplier: number }>();
+
+  upgrades.forEach(upgrade => {
+    upgrade.effects
+      .filter((effect): effect is Extract<UpgradeEffect, { type: 'synergyMultiplier' }> => effect.type === 'synergyMultiplier')
+      .forEach(effect => {
+        // Count how many items with this tag the player owns
+        const tagCount = upgrades.filter(u => u.tags?.includes(effect.tag)).length;
+        const totalBonus = effect.value * tagCount;
+
+        // Determine if this is a bet synergy or interest synergy
+        if (effect.tag.includes('synergy')) {
+          const key = effect.tag;
+          if (!synergies.has(key)) {
+            synergies.set(key, { multiplier: 0 });
+          }
+          const entry = synergies.get(key)!;
+
+          if (effect.tag === 'interest-synergy') {
+            entry.interestBonus = (entry.interestBonus ?? 0) + totalBonus;
+          } else {
+            // For bet synergies, we need to find which bet this applies to
+            // This will be applied in getBetBonusMap
+            entry.multiplier += totalBonus;
+          }
+        }
+      });
+  });
+
+  return synergies;
+}
+
+function getGlobalMultiplier(upgrades: OwnedUpgrade[]): number {
+  return upgrades.reduce((total, upgrade) => {
+    const bonus = upgrade.effects
+      .filter((effect): effect is Extract<UpgradeEffect, { type: 'globalMultiplier' }> => effect.type === 'globalMultiplier')
+      .reduce((sum, effect) => sum + effect.value, 0);
     return total + bonus;
   }, 0);
+}
+
+function getCompletedTransformations(upgrades: OwnedUpgrade[]): Set<string> {
+  const transformationPieces = new Map<string, number>();
+
+  upgrades.forEach(upgrade => {
+    upgrade.effects
+      .filter((effect): effect is Extract<UpgradeEffect, { type: 'transformation' }> => effect.type === 'transformation')
+      .forEach(effect => {
+        transformationPieces.set(effect.set, (transformationPieces.get(effect.set) ?? 0) + 1);
+      });
+  });
+
+  const completed = new Set<string>();
+  transformationPieces.forEach((count, set) => {
+    if (count >= 3) {
+      completed.add(set);
+    }
+  });
+
+  return completed;
+}
+
+function getTransformationBonuses(completedSets: Set<string>): { betMultipliers: Map<string, number>; interestBonus: number } {
+  const betMultipliers = new Map<string, number>();
+  let interestBonus = 0;
+
+  completedSets.forEach(set => {
+    if (set === 'gambler') {
+      // Gambler transformation: +2.0× on extreme bets
+      betMultipliers.set('special-joker', (betMultipliers.get('special-joker') ?? 0) + 2.0);
+      betMultipliers.set('special-ace', (betMultipliers.get('special-ace') ?? 0) + 2.0);
+    } else if (set === 'banker') {
+      // Banker transformation: +8% total interest
+      interestBonus += 0.08;
+    }
+  });
+
+  return { betMultipliers, interestBonus };
 }
 
 const getProfileById = (profilesData: PlayerProfile[], id: string | null) =>
@@ -754,6 +1237,8 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
   const [isDeckModalOpen, setIsDeckModalOpen] = useState(false);
   const [pendingDeckId, setPendingDeckId] = useState<string>(deckPresets[0].id);
   const [newProfileName, setNewProfileName] = useState('');
+  const [comboStreak, setComboStreak] = useState(0);
+  const [lastBetHit, setLastBetHit] = useState<boolean | null>(null);
   const [profileSelectionId, setProfileSelectionId] = useState<string | null>(null);
   const [profileMessage, setProfileMessage] = useState<string | null>(null);
   const profilesLoadedRef = useRef(false);
@@ -1173,10 +1658,20 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
   );
 
   const betBonusMap = useMemo(() => getBetBonusMap(ownedUpgrades), [ownedUpgrades]);
-  const flatBonus = useMemo(
-    () => getFlatBonus(ownedUpgrades) + deckModifiers.flatBonus,
-    [ownedUpgrades, deckModifiers.flatBonus]
-  );
+  const flatBonus = useMemo(() => {
+    let bonus = getFlatBonus(ownedUpgrades) + deckModifiers.flatBonus;
+
+    // Apply boss modifier that reduces flat bonus
+    const boss = getBossForRound(roundNumber);
+    if (boss && boss.effect?.type === 'reduceFlatBonus' && boss.effect.value !== undefined) {
+      bonus = boss.effect.value; // Set to specific value (0 for Nullifier boss)
+    } else if (boss && boss.effect?.type === 'noInterest') {
+      // Accountant boss reduces flat bonuses by 50%
+      bonus = Math.floor(bonus * 0.5);
+    }
+
+    return bonus;
+  }, [ownedUpgrades, deckModifiers.flatBonus, roundNumber]);
   const interestRate = useMemo(
     () => BASE_INTEREST + deckModifiers.interestBonus + getInterestBonus(ownedUpgrades),
     [ownedUpgrades, deckModifiers.interestBonus]
@@ -1436,7 +1931,7 @@ const resetGameState = () => {
         } else {
           setPurchasedShopIds([]);
           if (initialGamePhase === 'shop' || initialGamePhase === 'shopTransition') {
-            setShopChoices(generateShopChoices(storedRoundNumber));
+            setShopChoices(generateShopChoices(storedRoundNumber, storedOwnedUpgrades));
           } else {
             setShopChoices([]);
           }
@@ -1760,14 +2255,23 @@ const resetGameState = () => {
   }
 
   const betsByCategory = useMemo(() => {
-    return betOptions.reduce((acc, option) => {
+    // Check if this is a boss round and get modifiers
+    const boss = getBossForRound(roundNumber);
+    let availableBets = betOptions;
+
+    // Apply boss modifiers that disable certain bets
+    if (boss && boss.effect?.type === 'disableBets' && boss.effect.betIds) {
+      availableBets = betOptions.filter(bet => !boss.effect!.betIds!.includes(bet.id));
+    }
+
+    return availableBets.reduce((acc, option) => {
       if (!acc[option.category]) {
         acc[option.category] = [];
       }
       acc[option.category].push(option);
       return acc;
     }, {} as Record<BetCategory, BetOption[]>);
-  }, []);
+  }, [roundNumber]);
 
   const displayedRecentCards = useMemo(() => {
     const active = recentCards.filter((entry) => entry.status !== 'exit');
@@ -1902,12 +2406,86 @@ const resetGameState = () => {
 
     const baseScore = drawnCard.rank === 'Joker' ? 22 : Math.max(getRankValue(drawnCard.rank), 2);
     const betBonus = betBonusMap.get(selectedBet.id) ?? 0;
-    const multiplier = selectedBet.baseMultiplier + betBonus;
     const hit = selectedBet.check(drawnCard);
+
+    // Calculate combo streak bonus
+    const comboCounterItems = ownedUpgrades.filter(u =>
+      u.effects.some(e => e.type === 'comboCounter')
+    );
+    let comboBonus = 0;
+    if (comboCounterItems.length > 0) {
+      comboCounterItems.forEach(item => {
+        item.effects
+          .filter((e): e is Extract<UpgradeEffect, { type: 'comboCounter' }> => e.type === 'comboCounter')
+          .forEach(effect => {
+            comboBonus += effect.value * comboStreak;
+          });
+      });
+    }
+
+    // Check for conditional bonuses (Underdog Spirit: bonus after missing)
+    let conditionalMultiplier = 0;
+    if (!hit && lastBetHit === false) {
+      // Just missed, no bonus
+    } else if (hit && lastBetHit === false) {
+      // Hit after miss - check for comeback bonus
+      ownedUpgrades.forEach(upgrade => {
+        upgrade.effects
+          .filter((e): e is Extract<UpgradeEffect, { type: 'conditionalBonus' }> => e.type === 'conditionalBonus')
+          .forEach(effect => {
+            if (effect.condition === 'onMiss' && effect.multiplier) {
+              conditionalMultiplier += effect.multiplier;
+            }
+          });
+      });
+    }
+
+    // Apply global multiplier
+    const globalMult = getGlobalMultiplier(ownedUpgrades);
+
+    let multiplier = selectedBet.baseMultiplier + betBonus + comboBonus + conditionalMultiplier + globalMult;
+
+    // Apply boss modifier that reduces multipliers
+    const boss = getBossForRound(roundNumber);
+    if (boss && boss.effect?.type === 'reduceMultipliers' && boss.effect.value !== undefined) {
+      multiplier = multiplier * boss.effect.value; // e.g., multiply by 0.5 for 50% reduction
+    }
 
     const drawScore = Math.floor(
       (hit ? baseScore * multiplier : baseScore * 0.5) + flatBonus
     );
+
+    // Update combo streak
+    if (hit) {
+      setComboStreak(prev => prev + 1);
+    } else {
+      setComboStreak(0);
+    }
+    setLastBetHit(hit);
+
+    // Apply conditional bank rewards/penalties
+    let bankDelta = 0;
+    ownedUpgrades.forEach(upgrade => {
+      upgrade.effects
+        .filter((e): e is Extract<UpgradeEffect, { type: 'conditionalBonus' }> => e.type === 'conditionalBonus')
+        .forEach(effect => {
+          if (hit && effect.condition === 'onHit') {
+            if (effect.bankReward) bankDelta += effect.bankReward;
+            if (effect.bankPenalty) bankDelta -= effect.bankPenalty; // Items like High Roller's Pride
+          } else if (!hit && effect.condition === 'onMiss') {
+            if (effect.bankPenalty) bankDelta -= effect.bankPenalty;
+          }
+        });
+    });
+
+    // Apply boss bank drain effect on miss
+    if (!hit && boss && boss.effect?.type === 'bankDrain' && boss.effect.value !== undefined) {
+      bankDelta -= boss.effect.value;
+    }
+
+    if (bankDelta !== 0) {
+      setBank(prev => Math.max(0, prev + bankDelta));
+    }
 
     const floatingScore: FloatingScore = {
       id: `score-${Date.now()}`,
@@ -2014,16 +2592,28 @@ const resetGameState = () => {
     }
 
     const preInterestBank = bank + finalScore;
-    const interestEarned = Math.floor(preInterestBank * interestRate);
+
+    // Apply boss "noInterest" effect
+    const boss = getBossForRound(roundNumber);
+    let effectiveInterestRate = interestRate;
+    if (boss && boss.effect?.type === 'noInterest') {
+      effectiveInterestRate = 0;
+    }
+
+    const interestEarned = Math.floor(preInterestBank * effectiveInterestRate);
     const bankAfterInterest = preInterestBank + interestEarned;
 
     const messageParts: string[] = [`Banked ${formatDisplayNumber(finalScore)} points`];
     if (conversionPoints > 0) {
       messageParts.push(`(${formatDisplayNumber(conversionPoints)} from leftover draws)`);
     }
-    messageParts.push(
-      `+${formatDisplayNumber(interestEarned)} from ${(interestRate * 100).toFixed(0)}% interest.`
-    );
+    if (effectiveInterestRate > 0) {
+      messageParts.push(
+        `+${formatDisplayNumber(interestEarned)} from ${(effectiveInterestRate * 100).toFixed(0)}% interest.`
+      );
+    } else if (boss && boss.effect?.type === 'noInterest') {
+      messageParts.push(`(No interest this round - Boss Effect!)`);
+    }
     const finalMessage = messageParts.join(' ');
 
     setBank(bankAfterInterest);
@@ -2032,7 +2622,7 @@ const resetGameState = () => {
     setTargetAchieved(false);
     setFloatingScores([]);
     setDrawAnimations([]);
-    setShopChoices(generateShopChoices(roundNumber));
+    setShopChoices(generateShopChoices(roundNumber, ownedUpgrades));
     setPurchasedShopIds([]);
     setShopMessage(finalMessage);
     setShopTransitionMessage(finalMessage);
@@ -2661,7 +3251,12 @@ const resetGameState = () => {
           <div className={cn('text-xs uppercase tracking-wider', textPalette.secondary)}>
             Round Cleared
           </div>
-          <div className={cn('text-4xl font-bold', textPalette.positive)}>Round {roundNumber}</div>
+          <div className={cn('text-4xl font-bold', textPalette.positive)}>
+            Round {roundNumber}
+            {isBossRound(roundNumber + 1) && (
+              <span className={cn('ml-3 text-xl', textPalette.danger)}>⚠️ Boss Next!</span>
+            )}
+          </div>
           <p className={cn('text-sm leading-relaxed', textPalette.secondary)}>
             You banked {formatDisplayNumber(roundScore)} points. Spend some now or roll them into the
             next round.
@@ -2732,12 +3327,54 @@ const resetGameState = () => {
                         <li key={index}>+{(effect.value * 100).toFixed(0)}% interest on bank</li>
                       );
                     }
-                    const betLabel = betOptionMap.get(effect.betId)?.label ?? effect.betId;
-                    return (
-                      <li key={index}>
-                        +{effect.value.toFixed(2)}× multiplier to {betLabel}
-                      </li>
-                    );
+                    if (effect.type === 'betMultiplier') {
+                      const betLabel = betOptionMap.get(effect.betId)?.label ?? effect.betId;
+                      return (
+                        <li key={index}>
+                          +{effect.value.toFixed(2)}× multiplier to {betLabel}
+                        </li>
+                      );
+                    }
+                    if (effect.type === 'synergyMultiplier') {
+                      return (
+                        <li key={index}>
+                          +{effect.value.toFixed(2)}× per {effect.tag} item
+                        </li>
+                      );
+                    }
+                    if (effect.type === 'transformation') {
+                      return (
+                        <li key={index}>
+                          Transformation piece {effect.piece}/3
+                        </li>
+                      );
+                    }
+                    if (effect.type === 'conditionalBonus') {
+                      if (effect.bankReward) {
+                        return <li key={index}>+{effect.bankReward} bank on hit</li>;
+                      }
+                      if (effect.bankPenalty) {
+                        return <li key={index}>-{effect.bankPenalty} bank on miss</li>;
+                      }
+                      if (effect.multiplier) {
+                        return <li key={index}>+{effect.multiplier.toFixed(1)}× on {effect.condition}</li>;
+                      }
+                    }
+                    if (effect.type === 'comboCounter') {
+                      return (
+                        <li key={index}>
+                          +{effect.value.toFixed(2)}× per consecutive hit
+                        </li>
+                      );
+                    }
+                    if (effect.type === 'globalMultiplier') {
+                      return (
+                        <li key={index}>
+                          +{effect.value.toFixed(2)}× to ALL bets
+                        </li>
+                      );
+                    }
+                    return null;
                   })}
                 </ul>
                 <div
@@ -2779,6 +3416,14 @@ const resetGameState = () => {
             <div className={cn('mt-2 text-xs uppercase tracking-[0.35em]', textPalette.secondary)}>
               Round {roundNumber} • Target {formatDisplayNumber(roundTarget)}
             </div>
+            {(() => {
+              const currentBoss = getBossForRound(roundNumber);
+              return currentBoss ? (
+                <div className={cn('mt-2 text-xs font-bold uppercase tracking-wider', textPalette.danger)}>
+                  ⚠️ BOSS: {currentBoss.name}
+                </div>
+              ) : null;
+            })()}
           </div>
           <div className="text-right">
             <div className={cn('mb-1 text-xs uppercase tracking-[0.3em]', textPalette.secondary)}>
@@ -3008,6 +3653,22 @@ const resetGameState = () => {
       </div>
 
       <div className={cn('flex-1 overflow-y-auto px-6 pb-12 pt-8 lg:px-12', palette.panelRight)}>
+        {(() => {
+          const currentBoss = getBossForRound(roundNumber);
+          return currentBoss ? (
+            <div className={cn('mb-6 rounded-xl border-2 p-4', palette.borderDanger, palette.surfaceCard)}>
+              <div className={cn('mb-1 text-xs font-bold uppercase tracking-wider', textPalette.danger)}>
+                ⚠️ BOSS ROUND
+              </div>
+              <div className={cn('text-lg font-bold', textPalette.primary)}>
+                {currentBoss.name}
+              </div>
+              <p className={cn('mt-1 text-sm', textPalette.secondary)}>
+                {currentBoss.description}
+              </p>
+            </div>
+          ) : null;
+        })()}
         <div className="mb-8 flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className={cn('text-2xl font-bold', textPalette.accent)}>Select Your Bet</h2>
