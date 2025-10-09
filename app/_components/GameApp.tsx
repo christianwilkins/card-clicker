@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import Card, { type CardType, type Rank, type Suit } from '@/components/Card';
 import RecentCardItem, { type RecentCardStatus } from '@/components/RecentCardItem';
@@ -52,6 +52,8 @@ interface StoredGameState {
   targetAchieved: boolean;
   currentShopChoices: ShopUpgrade[];
   purchasedShopIds: string[];
+  activeDeckId: string;
+  deckModifiers: DeckModifier;
 }
 
 interface BetOption {
@@ -93,14 +95,47 @@ interface AudioVoice {
   ampDepth: GainNode;
 }
 
+interface DeckModifier {
+  extraDraws?: number;
+  flatBonus?: number;
+  interestBonus?: number;
+  startingBank?: number;
+}
+
+interface DeckPreset {
+  id: string;
+  name: string;
+  description: string;
+  modifiers: DeckModifier;
+  buildDeck: () => CardType[];
+  requirement?: { type: 'bestRound'; value: number; label: string };
+}
+
+interface PlayerProfile {
+  id: string;
+  name: string;
+  unlockedDecks: string[];
+  bestRound: number;
+}
+
 const suits: Suit[] = ['♠', '♥', '♦', '♣'];
 const ranks: Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
 const STORAGE_KEY = 'card-clicker-rogue-v1';
 const THEME_STORAGE_KEY = 'card-clicker-theme';
+const PROFILES_KEY = 'card-clicker-profiles';
+const ACTIVE_PROFILE_KEY = 'card-clicker-active-profile';
 const BASE_DRAWS = 5;
 const BASE_INTEREST = 0.05;
 const GUARANTEED_DRAW_VALUE = 12;
 const MAX_RECENT_CARDS = 6;
+
+function createCard(suit: Suit, rank: Rank, variant?: number): CardType {
+  return {
+    suit,
+    rank,
+    id: variant !== undefined ? `${rank}${suit}-${variant}` : `${rank}${suit}`
+  };
+}
 
 function createJokerCard(color: 'red' | 'black', id?: string): CardType {
   return {
@@ -128,20 +163,104 @@ function normalizeStoredCard(card: CardType): CardType {
   };
 }
 
-function createDeck(): CardType[] {
+function createStandardDeck(): CardType[] {
   const deck: CardType[] = [];
   for (const suit of suits) {
     for (const rank of ranks) {
-      deck.push({
-        suit,
-        rank,
-        id: `${rank}${suit}`
-      });
+      deck.push(createCard(suit, rank));
     }
   }
   deck.push(createJokerCard('red', 'joker-red'));
   deck.push(createJokerCard('black', 'joker-black'));
   return deck;
+}
+
+function createHighRollerDeck(): CardType[] {
+  const deck: CardType[] = [];
+  const premiumRanks: Rank[] = ['7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+  for (const suit of suits) {
+    for (const rank of premiumRanks) {
+      deck.push(createCard(suit, rank));
+    }
+  }
+
+  let variant = 0;
+  const bonusRanks: Rank[] = ['J', 'Q', 'K', 'A'];
+  const bonusSuits: Suit[] = ['♠', '♥'];
+  for (const suit of bonusSuits) {
+    for (const rank of bonusRanks) {
+      deck.push(createCard(suit, rank, variant++));
+    }
+  }
+
+  deck.push(createJokerCard('red', 'joker-red-high'));
+  deck.push(createJokerCard('black', 'joker-black-high'));
+  deck.push(createJokerCard('black', 'joker-black-high-2'));
+  return deck;
+}
+
+function createProbabilityBenderDeck(): CardType[] {
+  const deck = createStandardDeck();
+  let variant = 0;
+  const lowRanks: Rank[] = ['2', '3', '4', '5', '6'];
+  const redSuits: Suit[] = ['♥', '♦'];
+  for (const suit of redSuits) {
+    for (const rank of lowRanks) {
+      deck.push(createCard(suit, rank, variant++));
+    }
+  }
+
+  const momentumRanks: Rank[] = ['9', '10', 'J'];
+  const blackSuits: Suit[] = ['♠', '♣'];
+  for (const suit of blackSuits) {
+    for (const rank of momentumRanks) {
+      deck.push(createCard(suit, rank, variant++));
+    }
+  }
+
+  deck.push(createJokerCard('red', 'joker-red-pb'));
+  deck.push(createJokerCard('red', 'joker-red-pb-2'));
+  deck.push(createJokerCard('black', 'joker-black-pb'));
+  return deck;
+}
+
+const deckPresets: DeckPreset[] = [
+  {
+    id: 'balanced',
+    name: 'Balanced Deck',
+    description: 'Classic 54-card spread. No modifiers—pure odds.',
+    modifiers: {},
+    buildDeck: createStandardDeck
+  },
+  {
+    id: 'high-roller',
+    name: 'High Roller',
+    description:
+      'Lean stack stacked with face cards and extra jokers to chase big multipliers.',
+    modifiers: { startingBank: 120, flatBonus: 4 },
+    buildDeck: createHighRollerDeck,
+    requirement: { type: 'bestRound', value: 5, label: 'Reach Round 5' }
+  },
+  {
+    id: 'probability-bender',
+    name: 'Probability Bender',
+    description:
+      'Weighted draws favor streaky reds, boosted lows, and a surplus of wild cards.',
+    modifiers: { extraDraws: 1, interestBonus: 0.02 },
+    buildDeck: createProbabilityBenderDeck,
+    requirement: { type: 'bestRound', value: 10, label: 'Reach Round 10' }
+  }
+];
+
+const deckPresetMap = new Map<string, DeckPreset>(deckPresets.map((preset) => [preset.id, preset]));
+
+function getDeckPresetById(deckId: string): DeckPreset {
+  return deckPresetMap.get(deckId) ?? deckPresets[0];
+}
+
+function buildDeckForPreset(deckId: string): CardType[] {
+  const preset = getDeckPresetById(deckId);
+  return preset.buildDeck();
 }
 
 function shuffleDeck(deck: CardType[]): CardType[] {
@@ -450,6 +569,15 @@ function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ');
 }
 
+const DEFAULT_DECK_MODIFIERS: Required<DeckModifier> = {
+  extraDraws: 0,
+  flatBonus: 0,
+  interestBonus: 0,
+  startingBank: 0
+};
+
+const getProfileStorageKey = (profileId: string) => `${STORAGE_KEY}-${profileId}`;
+
 const templateByName = new Map<string, ShopUpgrade>(upgradeTemplates.map((template) => [template.name, template]));
 
 function calculateRoundTarget(roundNumber: number, ownedUpgrades: OwnedUpgrade[]): number {
@@ -564,8 +692,23 @@ function getInterestBonus(upgrades: OwnedUpgrade[]): number {
   }, 0);
 }
 
+const getProfileById = (profilesData: PlayerProfile[], id: string | null) =>
+  (id ? profilesData.find((profile) => profile.id === id) ?? null : null);
+
+const isDeckUnlocked = (profile: PlayerProfile | null, preset: DeckPreset): boolean => {
+  if (!preset.requirement) return true;
+  if (!profile) return false;
+  if (profile.unlockedDecks.includes(preset.id)) return true;
+  if (preset.requirement.type === 'bestRound') {
+    return profile.bestRound >= preset.requirement.value;
+  }
+  return false;
+};
+
 export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
   const [gamePhase, setGamePhaseState] = useState<GamePhase>(initialPhase);
+  const [profiles, setProfiles] = useState<PlayerProfile[]>([]);
+  const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const setGamePhase = (phase: GamePhase) => {
     setGamePhaseState(phase);
     setIsSettingsOpen(false);
@@ -584,6 +727,8 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
   const [recentCards, setRecentCards] = useState<RecentCardEntry[]>([]);
   const [lastDrawScore, setLastDrawScore] = useState(0);
   const [lastDrawnCard, setLastDrawnCard] = useState<CardType | null>(null);
+  const [activeDeckId, setActiveDeckId] = useState<string>(deckPresets[0].id);
+  const [deckModifiers, setDeckModifiers] = useState<Required<DeckModifier>>(DEFAULT_DECK_MODIFIERS);
   const [ownedUpgrades, setOwnedUpgrades] = useState<OwnedUpgrade[]>([]);
   const [shopChoices, setShopChoices] = useState<ShopUpgrade[]>([]);
   const [purchasedShopIds, setPurchasedShopIds] = useState<string[]>([]);
@@ -606,6 +751,214 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
   const pathname = usePathname();
   const [routingReady, setRoutingReady] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isDeckModalOpen, setIsDeckModalOpen] = useState(false);
+  const [pendingDeckId, setPendingDeckId] = useState<string>(deckPresets[0].id);
+  const [newProfileName, setNewProfileName] = useState('');
+  const [profileSelectionId, setProfileSelectionId] = useState<string | null>(null);
+  const [profileMessage, setProfileMessage] = useState<string | null>(null);
+  const profilesLoadedRef = useRef(false);
+  const currentProfile = useMemo(
+    () => getProfileById(profiles, activeProfileId),
+    [profiles, activeProfileId]
+  );
+
+  const updateActiveProfile = useCallback(
+    (updater: (profile: PlayerProfile) => PlayerProfile) => {
+      if (!activeProfileId) return;
+      setProfiles((prev) =>
+        prev.map((profile) => (profile.id === activeProfileId ? updater(profile) : profile))
+      );
+    },
+    [activeProfileId]
+  );
+
+  const bestRoundRef = useRef(0);
+
+  useEffect(() => {
+    bestRoundRef.current = currentProfile?.bestRound ?? 0;
+  }, [currentProfile]);
+
+  useEffect(() => {
+    if (profiles.length === 0) {
+      if (profileSelectionId !== null) {
+        setProfileSelectionId(null);
+      }
+      return;
+    }
+    const hasSelection =
+      profileSelectionId && profiles.some((profile) => profile.id === profileSelectionId);
+    if (hasSelection) {
+      return;
+    }
+    if (activeProfileId && profiles.some((profile) => profile.id === activeProfileId)) {
+      setProfileSelectionId(activeProfileId);
+      return;
+    }
+    setProfileSelectionId(profiles[0].id);
+  }, [profiles, activeProfileId, profileSelectionId]);
+
+  const buildGameStatePayload = useCallback((): StoredGameState => ({
+    deck,
+    bank,
+    roundNumber,
+    roundScore,
+    roundTarget,
+    drawsRemaining,
+    roundOutcome,
+    gamePhase,
+    selectedBetId,
+    ownedUpgrades,
+    recentCards,
+    targetAchieved,
+    currentShopChoices: shopChoices,
+    purchasedShopIds,
+    activeDeckId,
+    deckModifiers
+  }), [
+    deck,
+    bank,
+    roundNumber,
+    roundScore,
+    roundTarget,
+    drawsRemaining,
+    roundOutcome,
+    gamePhase,
+    selectedBetId,
+    ownedUpgrades,
+    recentCards,
+    targetAchieved,
+    shopChoices,
+    purchasedShopIds,
+    activeDeckId,
+    deckModifiers
+  ]);
+
+  const handleSaveProfile = useCallback(() => {
+    const trimmedName = newProfileName.trim();
+    if (!trimmedName) {
+      setProfileMessage('Enter a profile name before saving.');
+      return;
+    }
+    if (profiles.some((profile) => profile.name.toLowerCase() === trimmedName.toLowerCase())) {
+      setProfileMessage('A profile with that name already exists.');
+      return;
+    }
+
+    const profileId = `profile-${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 8)}`;
+    const unlockedDecks = currentProfile
+      ? Array.from(new Set(currentProfile.unlockedDecks))
+      : [deckPresets[0].id];
+    const bestRound = currentProfile?.bestRound ?? 0;
+    const nextProfile: PlayerProfile = {
+      id: profileId,
+      name: trimmedName,
+      unlockedDecks,
+      bestRound
+    };
+
+    setProfiles((prev) => [...prev, nextProfile]);
+    setActiveProfileId(nextProfile.id);
+    setProfileSelectionId(nextProfile.id);
+    setNewProfileName('');
+    setProfileMessage(`Saved profile "${nextProfile.name}".`);
+
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(
+          getProfileStorageKey(nextProfile.id),
+          JSON.stringify(buildGameStatePayload())
+        );
+      } catch (error) {
+        console.warn('Failed to persist saved profile to localStorage.', error);
+      }
+    }
+  }, [newProfileName, profiles, currentProfile, buildGameStatePayload]);
+
+  const handleLoadProfile = useCallback(() => {
+    if (!profileSelectionId) {
+      setProfileMessage('Select a profile to load.');
+      return;
+    }
+    if (profileSelectionId === activeProfileId) {
+      setProfileMessage('Profile already active.');
+      return;
+    }
+    const selectedProfile = profiles.find((profile) => profile.id === profileSelectionId);
+    if (!selectedProfile) {
+      setProfileMessage('Could not find the selected profile.');
+      return;
+    }
+    setActiveProfileId(profileSelectionId);
+    setProfileMessage(`Loaded profile "${selectedProfile.name}".`);
+  }, [profileSelectionId, activeProfileId, profiles]);
+
+  const handleDeleteProfile = useCallback(() => {
+    if (!profileSelectionId) {
+      setProfileMessage('Select a profile to delete.');
+      return;
+    }
+    if (profiles.length <= 1) {
+      setProfileMessage('Keep at least one profile on disk.');
+      return;
+    }
+    const profileToDelete = profiles.find((profile) => profile.id === profileSelectionId);
+    if (!profileToDelete) {
+      setProfileMessage('Could not find the selected profile.');
+      return;
+    }
+    const remaining = profiles.filter((profile) => profile.id !== profileSelectionId);
+    setProfiles(remaining);
+
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.removeItem(getProfileStorageKey(profileSelectionId));
+      } catch (error) {
+        console.warn('Failed to remove profile save from localStorage.', error);
+      }
+    }
+
+    const nextActiveId =
+      profileSelectionId === activeProfileId ? remaining[0]?.id ?? null : activeProfileId;
+    setActiveProfileId(nextActiveId);
+    const nextSelectionId = remaining.length > 0 ? (nextActiveId ?? remaining[0].id) : null;
+    setProfileSelectionId(nextSelectionId);
+    setProfileMessage(`Deleted profile "${profileToDelete.name}".`);
+  }, [profileSelectionId, profiles, activeProfileId]);
+
+  const handleProfileNameChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    setNewProfileName(event.target.value);
+    setProfileMessage(null);
+  }, []);
+
+  const handleProfileSelectionChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    const value = event.target.value;
+    setProfileSelectionId(value ? value : null);
+    setProfileMessage(null);
+  }, []);
+
+  const getDefaultDeckId = useCallback(() => {
+    if (!currentProfile) return deckPresets[0].id;
+    const activePreset = getDeckPresetById(activeDeckId);
+    if (isDeckUnlocked(currentProfile, activePreset)) {
+      return activePreset.id;
+    }
+    const fallback = deckPresets.find((preset) => isDeckUnlocked(currentProfile, preset));
+    return fallback?.id ?? deckPresets[0].id;
+  }, [activeDeckId, currentProfile]);
+
+  const openDeckModal = useCallback(() => {
+    const defaultDeck = getDefaultDeckId();
+    setPendingDeckId(defaultDeck);
+    setIsDeckModalOpen(true);
+  }, [getDefaultDeckId]);
+
+  const startNewRun = useCallback(() => {
+    openDeckModal();
+  }, [openDeckModal]);
+
+  const handleDeckCancel = useCallback(() => {
+    setIsDeckModalOpen(false);
+  }, []);
 
   const palette = useMemo(() => {
     if (theme === 'dark') {
@@ -820,10 +1173,13 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
   );
 
   const betBonusMap = useMemo(() => getBetBonusMap(ownedUpgrades), [ownedUpgrades]);
-  const flatBonus = useMemo(() => getFlatBonus(ownedUpgrades), [ownedUpgrades]);
+  const flatBonus = useMemo(
+    () => getFlatBonus(ownedUpgrades) + deckModifiers.flatBonus,
+    [ownedUpgrades, deckModifiers.flatBonus]
+  );
   const interestRate = useMemo(
-    () => BASE_INTEREST + getInterestBonus(ownedUpgrades),
-    [ownedUpgrades]
+    () => BASE_INTEREST + deckModifiers.interestBonus + getInterestBonus(ownedUpgrades),
+    [ownedUpgrades, deckModifiers.interestBonus]
   );
 
   useEffect(() => {
@@ -883,18 +1239,125 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
   }, [gamePhase, pathname, routingReady, router]);
 
   useEffect(() => {
-    if (hasLoadedRef.current) return;
     if (typeof window === 'undefined') return;
+    if (profilesLoadedRef.current) return;
 
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const storedProfilesRaw = window.localStorage.getItem(PROFILES_KEY);
+      let loadedProfiles: PlayerProfile[] = [];
+      if (storedProfilesRaw) {
+        try {
+          const parsed = JSON.parse(storedProfilesRaw) as PlayerProfile[];
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            loadedProfiles = parsed;
+          }
+        } catch (error) {
+          console.warn('Failed to parse stored profiles, resetting.', error);
+        }
+      }
+
+      if (loadedProfiles.length === 0) {
+        loadedProfiles = [
+          {
+            id: `profile-${Date.now().toString(16)}`,
+            name: 'Player 1',
+            unlockedDecks: [deckPresets[0].id],
+            bestRound: 0
+          }
+        ];
+      }
+
+      const storedActive = window.localStorage.getItem(ACTIVE_PROFILE_KEY);
+      const initialProfileId =
+        storedActive && loadedProfiles.some((profile) => profile.id === storedActive)
+          ? storedActive
+          : loadedProfiles[0]?.id ?? null;
+
+      setProfiles(loadedProfiles);
+      setActiveProfileId(initialProfileId);
+    } finally {
+      profilesLoadedRef.current = true;
+    }
+  }, []);
+
+useEffect(() => {
+  if (!profilesLoadedRef.current) return;
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
+  if (activeProfileId) {
+    window.localStorage.setItem(ACTIVE_PROFILE_KEY, activeProfileId);
+  }
+}, [profiles, activeProfileId]);
+
+useEffect(() => {
+  if (!currentProfile) return;
+  if (roundNumber <= bestRoundRef.current) return;
+  bestRoundRef.current = roundNumber;
+  updateActiveProfile((profile) => {
+    const nextBest = Math.max(profile.bestRound, roundNumber);
+    const unlocked = new Set(profile.unlockedDecks);
+    deckPresets.forEach((preset) => {
+      if (
+        preset.requirement?.type === 'bestRound' &&
+        nextBest >= preset.requirement.value
+      ) {
+        unlocked.add(preset.id);
+      }
+    });
+    return {
+      ...profile,
+      bestRound: nextBest,
+      unlockedDecks: Array.from(unlocked)
+    };
+  });
+}, [roundNumber, currentProfile, updateActiveProfile]);
+
+const resetGameState = () => {
+  deckRef.current = [];
+  setDeck([]);
+  setBank(0);
+  setRoundNumber(1);
+  setRoundScore(0);
+  setRoundTarget(calculateRoundTarget(1, []));
+  setDrawsRemaining(BASE_DRAWS);
+  setRoundOutcome('active');
+  setSelectedBetId(null);
+  setFloatingScores([]);
+  setDrawAnimations([]);
+  setRecentCards([]);
+  setLastDrawScore(0);
+  setLastDrawnCard(null);
+  setOwnedUpgrades([]);
+  setShopChoices([]);
+  setPurchasedShopIds([]);
+  setShopMessage(null);
+  setShopTransitionMessage(null);
+  setBetFeedback(null);
+  setTargetAchieved(false);
+  setActiveDeckId(deckPresets[0].id);
+  setDeckModifiers(DEFAULT_DECK_MODIFIERS);
+  setIsDeckModalOpen(false);
+  setPendingDeckId(deckPresets[0].id);
+};
+
+  useEffect(() => {
+    if (!activeProfileId || typeof window === 'undefined') return;
+
+    resetGameState();
+    hasLoadedRef.current = false;
+    setReadyToPersist(false);
+
+    try {
+      const stored = window.localStorage.getItem(getProfileStorageKey(activeProfileId));
       if (stored) {
         const parsed = JSON.parse(stored) as Partial<StoredGameState>;
+
+        const resolvedDeckId = parsed.activeDeckId ?? deckPresets[0].id;
 
         const storedDeck =
           parsed.deck && Array.isArray(parsed.deck) && parsed.deck.length > 0
             ? parsed.deck.map(normalizeStoredCard)
-            : shuffleDeck(createDeck());
+            : shuffleDeck(buildDeckForPreset(resolvedDeckId));
         deckRef.current = storedDeck;
         setDeck(storedDeck);
 
@@ -907,16 +1370,16 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
         setRoundNumber(storedRoundNumber);
 
         setRoundScore(typeof parsed.roundScore === 'number' ? parsed.roundScore : 0);
-        const baseDrawAllowance = BASE_DRAWS + getExtraDraws(
-          parsed.ownedUpgrades && Array.isArray(parsed.ownedUpgrades) ? parsed.ownedUpgrades : []
-        );
-        setDrawsRemaining(
-          typeof parsed.drawsRemaining === 'number' ? parsed.drawsRemaining : baseDrawAllowance
-        );
-        setRoundOutcome(parsed.roundOutcome ?? 'active');
-        const initialPhase = parsed.gamePhase ?? 'menu';
-        setGamePhase(initialPhase);
-        setSelectedBetId(parsed.selectedBetId ?? null);
+
+        const basePresetModifiers = getDeckPresetById(resolvedDeckId).modifiers;
+        const storedDeckModifiers = {
+          ...DEFAULT_DECK_MODIFIERS,
+          ...basePresetModifiers,
+          ...(parsed.deckModifiers ?? {})
+        } as Required<DeckModifier>;
+        setDeckModifiers(storedDeckModifiers);
+        setActiveDeckId(resolvedDeckId);
+        setPendingDeckId(resolvedDeckId);
 
         const storedOwnedUpgrades =
           parsed.ownedUpgrades && Array.isArray(parsed.ownedUpgrades)
@@ -927,6 +1390,18 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
           icon: upgrade.icon ?? templateByName.get(upgrade.name)?.icon ?? '🔹'
         }));
         setOwnedUpgrades(hydratedOwnedUpgrades);
+
+        const baseDrawAllowance =
+          BASE_DRAWS + storedDeckModifiers.extraDraws +
+          getExtraDraws(hydratedOwnedUpgrades);
+
+        setDrawsRemaining(
+          typeof parsed.drawsRemaining === 'number' ? parsed.drawsRemaining : baseDrawAllowance
+        );
+        setRoundOutcome(parsed.roundOutcome ?? 'active');
+        const initialGamePhase = parsed.gamePhase ?? 'menu';
+        setGamePhase(initialGamePhase);
+        setSelectedBetId(parsed.selectedBetId ?? null);
 
         setRoundTarget(
           typeof parsed.roundTarget === 'number'
@@ -960,20 +1435,20 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
           );
         } else {
           setPurchasedShopIds([]);
-          if (initialPhase === 'shop' || initialPhase === 'shopTransition') {
+          if (initialGamePhase === 'shop' || initialGamePhase === 'shopTransition') {
             setShopChoices(generateShopChoices(storedRoundNumber));
           } else {
             setShopChoices([]);
           }
         }
       } else {
-        const freshDeck = shuffleDeck(createDeck());
+        const freshDeck = shuffleDeck(buildDeckForPreset(deckPresets[0].id));
         deckRef.current = freshDeck;
         setDeck(freshDeck);
       }
     } catch (error) {
-      console.warn('Failed to load stored game state, resetting progress.', error);
-      const freshDeck = shuffleDeck(createDeck());
+      console.warn('Failed to load profile state, resetting.', error);
+      const freshDeck = shuffleDeck(buildDeckForPreset(deckPresets[0].id));
       deckRef.current = freshDeck;
       setDeck(freshDeck);
       setGamePhase('menu');
@@ -982,7 +1457,7 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
       hasLoadedRef.current = true;
       setReadyToPersist(true);
     }
-  }, []);
+  }, [activeProfileId]);
 
   useEffect(() => () => {
     if (shopTransitionTimeoutRef.current) {
@@ -1008,46 +1483,19 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
   }, [gamePhase]);
 
   useEffect(() => {
-    if (!readyToPersist || typeof window === 'undefined') return;
+    if (!readyToPersist || typeof window === 'undefined' || !activeProfileId) return;
 
-    const payload: StoredGameState = {
-      deck,
-      bank,
-      roundNumber,
-      roundScore,
-      roundTarget,
-      drawsRemaining,
-      roundOutcome,
-      gamePhase,
-      selectedBetId,
-      ownedUpgrades,
-      recentCards,
-      targetAchieved,
-      currentShopChoices: shopChoices,
-      purchasedShopIds
-    };
+    const payload = buildGameStatePayload();
 
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      localStorage.setItem(getProfileStorageKey(activeProfileId), JSON.stringify(payload));
     } catch (error) {
       console.warn('Failed to persist game state to localStorage.', error);
     }
   }, [
-    bank,
-    deck,
-    drawsRemaining,
-    gamePhase,
-    ownedUpgrades,
+    buildGameStatePayload,
     readyToPersist,
-    recentCards,
-    roundNumber,
-    roundOutcome,
-    roundScore,
-    roundTarget,
-    selectedBetId,
-    shopChoices,
-    purchasedShopIds,
-    targetAchieved
+    activeProfileId
   ]);
 
   const clearFinalizeTimeout = () => {
@@ -1334,46 +1782,72 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
 
   const ensureDeck = () => {
     if (!deckRef.current || deckRef.current.length === 0) {
-      const reshuffled = shuffleDeck(createDeck());
+      const reshuffled = shuffleDeck(buildDeckForPreset(activeDeckId));
       deckRef.current = reshuffled;
       setDeck(reshuffled);
     }
   };
 
-  const startNewRun = () => {
-    const freshDeck = shuffleDeck(createDeck());
-    if (shopTransitionTimeoutRef.current) {
-      clearTimeout(shopTransitionTimeoutRef.current);
-      shopTransitionTimeoutRef.current = null;
-    }
-    if (gameOverTimeoutRef.current) {
-      clearTimeout(gameOverTimeoutRef.current);
-      gameOverTimeoutRef.current = null;
-    }
-    deckRef.current = freshDeck;
-    setDeck(freshDeck);
-    clearFinalizeTimeout();
-    setBank(0);
-    setRoundNumber(1);
-    setRoundScore(0);
-    setRoundTarget(calculateRoundTarget(1, []));
-    setDrawsRemaining(BASE_DRAWS);
-    setRoundOutcome('active');
-    setSelectedBetId(null);
-    setFloatingScores([]);
-    setDrawAnimations([]);
-    setRecentCards([]);
-    setOwnedUpgrades([]);
-    setShopChoices([]);
-    setShopMessage(null);
-    setShopTransitionMessage(null);
-    setBetFeedback(null);
-    setLastDrawScore(0);
-    setLastDrawnCard(null);
-    setTargetAchieved(false);
-    setPurchasedShopIds([]);
-    setGamePhase('gameplay');
-  };
+  const startRunWithDeck = useCallback(
+    (deckId: string) => {
+      const preset = getDeckPresetById(deckId);
+      const modifiers: Required<DeckModifier> = {
+        ...DEFAULT_DECK_MODIFIERS,
+        ...preset.modifiers
+      };
+
+      setActiveDeckId(preset.id);
+      setDeckModifiers(modifiers);
+
+      const freshDeck = shuffleDeck(buildDeckForPreset(preset.id));
+      deckRef.current = freshDeck;
+      setDeck(freshDeck);
+
+      clearFinalizeTimeout();
+      if (shopTransitionTimeoutRef.current) {
+        clearTimeout(shopTransitionTimeoutRef.current);
+        shopTransitionTimeoutRef.current = null;
+      }
+      if (gameOverTimeoutRef.current) {
+        clearTimeout(gameOverTimeoutRef.current);
+        gameOverTimeoutRef.current = null;
+      }
+
+      setBank(modifiers.startingBank);
+      setRoundNumber(1);
+      setRoundScore(0);
+      setRoundTarget(calculateRoundTarget(1, []));
+      setDrawsRemaining(BASE_DRAWS + modifiers.extraDraws);
+      setRoundOutcome('active');
+      setSelectedBetId(null);
+      setFloatingScores([]);
+      setDrawAnimations([]);
+      setRecentCards([]);
+      setOwnedUpgrades([]);
+      setShopChoices([]);
+      setPurchasedShopIds([]);
+      setShopMessage(null);
+      setShopTransitionMessage(null);
+      setBetFeedback(null);
+      setLastDrawScore(0);
+      setLastDrawnCard(null);
+      setTargetAchieved(false);
+      setGamePhase('gameplay');
+    },
+    [
+      clearFinalizeTimeout,
+      gameOverTimeoutRef,
+      shopTransitionTimeoutRef
+    ]
+  );
+
+  const handleDeckConfirm = useCallback(() => {
+    if (!currentProfile) return;
+    const preset = getDeckPresetById(pendingDeckId);
+    if (!isDeckUnlocked(currentProfile, preset)) return;
+    setIsDeckModalOpen(false);
+    startRunWithDeck(preset.id);
+  }, [currentProfile, pendingDeckId, startRunWithDeck]);
 
   const clearSavedData = () => {
     clearFinalizeTimeout();
@@ -1403,8 +1877,10 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
     setTargetAchieved(false);
     setPurchasedShopIds([]);
     setGamePhase('menu');
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem(STORAGE_KEY);
+    setActiveDeckId(deckPresets[0].id);
+    setDeckModifiers(DEFAULT_DECK_MODIFIERS);
+    if (typeof window !== 'undefined' && activeProfileId) {
+      localStorage.removeItem(getProfileStorageKey(activeProfileId));
     }
   };
 
@@ -1582,7 +2058,7 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
 
   const proceedToNextRound = () => {
     const nextRound = roundNumber + 1;
-    const freshDeck = shuffleDeck(createDeck());
+    const freshDeck = shuffleDeck(buildDeckForPreset(activeDeckId));
     if (shopTransitionTimeoutRef.current) {
       clearTimeout(shopTransitionTimeoutRef.current);
       shopTransitionTimeoutRef.current = null;
@@ -1593,7 +2069,7 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
     setRoundNumber(nextRound);
     const target = calculateRoundTarget(nextRound, ownedUpgrades);
     setRoundTarget(target);
-    const draws = BASE_DRAWS + getExtraDraws(ownedUpgrades);
+    const draws = BASE_DRAWS + deckModifiers.extraDraws + getExtraDraws(ownedUpgrades);
     setDrawsRemaining(draws);
     setRoundScore(0);
     setRoundOutcome('active');
@@ -1692,12 +2168,6 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
               >
                 Start New Run
               </button>
-              <button
-                onClick={resetToMenu}
-                className={cn(buttonBase, buttonPalette.muted, 'px-6 py-3 text-base')}
-              >
-                Return to Main Menu
-              </button>
             </div>
           </div>
           {ownedUpgrades.length > 0 && (
@@ -1707,6 +2177,127 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
             </div>
           )}
         </header>
+
+        <section className={cn('rounded-3xl p-8 space-y-6', palette.surfaceCard)}>
+          <div className="space-y-2">
+            <span className={cn('text-xs uppercase tracking-[0.3em]', textPalette.secondary)}>
+              Active Profile
+            </span>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className={cn('text-2xl font-semibold', textPalette.primary)}>
+                {currentProfile?.name ?? 'No Profile'}
+              </h2>
+              <span className={cn('text-sm', textPalette.secondary)}>
+                Decks Unlocked:{' '}
+                {currentProfile ? currentProfile.unlockedDecks.length : 0}/{deckPresets.length}
+              </span>
+            </div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+            <div className="space-y-2">
+              <label
+                htmlFor="profile-name"
+                className={cn('text-xs uppercase tracking-[0.3em]', textPalette.secondary)}
+              >
+                Save Current Run As
+              </label>
+              <input
+                id="profile-name"
+                type="text"
+                value={newProfileName}
+                onChange={handleProfileNameChange}
+                placeholder="Enter profile name"
+                className={cn(
+                  'w-full rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400',
+                  palette.borderSubtle,
+                  theme === 'dark' ? 'bg-slate-950/70 text-slate-100' : 'bg-white text-slate-900'
+                )}
+              />
+            </div>
+            <button
+              onClick={handleSaveProfile}
+              className={cn(buttonBase, buttonPalette.accent, 'w-full sm:w-auto')}
+            >
+              Save Profile
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            <label
+              htmlFor="profile-select"
+              className={cn('text-xs uppercase tracking-[0.3em]', textPalette.secondary)}
+            >
+              Saved Profiles
+            </label>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <select
+                id="profile-select"
+                value={profileSelectionId ?? ''}
+                onChange={handleProfileSelectionChange}
+                className={cn(
+                  'w-full rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400',
+                  palette.borderSubtle,
+                  theme === 'dark' ? 'bg-slate-950/70 text-slate-100' : 'bg-white text-slate-900'
+                )}
+              >
+                {profiles.length === 0 && <option value="">No saved profiles</option>}
+                {profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name}
+                  </option>
+                ))}
+              </select>
+              <div className="flex w-full gap-3 sm:w-auto">
+                <button
+                  onClick={handleLoadProfile}
+                  className={cn(buttonBase, buttonPalette.accentSecondary, 'flex-1')}
+                  disabled={!profileSelectionId || profileSelectionId === activeProfileId}
+                >
+                  Load
+                </button>
+                <button
+                  onClick={handleDeleteProfile}
+                  className={cn(buttonBase, buttonPalette.danger, 'flex-1')}
+                  disabled={!profileSelectionId || profiles.length <= 1}
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <span className={cn('text-xs uppercase tracking-[0.3em]', textPalette.secondary)}>
+              Deck Unlocks
+            </span>
+            <ul className="space-y-2 text-sm">
+              {deckPresets.map((preset) => {
+                const unlocked = isDeckUnlocked(currentProfile, preset);
+                const statusLabel = unlocked
+                  ? 'Unlocked'
+                  : preset.requirement?.label ?? 'Locked';
+                return (
+                  <li key={preset.id} className="flex items-center justify-between gap-3">
+                    <span className={cn('font-medium', textPalette.primary)}>{preset.name}</span>
+                    <span
+                      className={cn(
+                        'text-xs font-semibold uppercase tracking-wide',
+                        unlocked ? textPalette.positive : textPalette.secondary
+                      )}
+                    >
+                      {statusLabel}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+
+          {profileMessage && (
+            <div className={cn('text-sm', textPalette.secondary)}>{profileMessage}</div>
+          )}
+        </section>
 
         <div className="grid gap-6 lg:grid-cols-3">
           <section className={cn('rounded-3xl p-8 space-y-6 lg:col-span-2', palette.surfaceCard)}>
@@ -1891,6 +2482,162 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
     );
   };
 
+  const renderDeckModal = () => {
+    if (!isDeckModalOpen) return null;
+
+    const selectedPreset = getDeckPresetById(pendingDeckId);
+    const canStart = isDeckUnlocked(currentProfile, selectedPreset);
+
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-xl"
+        onClick={handleDeckCancel}
+      >
+        <div
+          className={cn('w-full max-w-4xl space-y-6 rounded-3xl p-8', palette.surfaceMuted)}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className={cn('text-xl font-semibold', textPalette.primary)}>Choose Your Deck</h3>
+              <p className={cn('mt-2 text-sm', textPalette.secondary)}>
+                Locked decks unlock on each profile as you hit their milestone requirement.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleDeckCancel}
+              className={cn(buttonBase, buttonPalette.muted, 'h-9 w-9 justify-center rounded-full px-0 text-base')}
+              aria-label="Close deck selection"
+            >
+              ×
+            </button>
+          </div>
+          <div className="grid gap-4 md:grid-cols-3">
+            {deckPresets.map((preset) => {
+              const unlocked = isDeckUnlocked(currentProfile, preset);
+              const isSelected = pendingDeckId === preset.id;
+              const modifiers = preset.modifiers ?? {};
+              const modifierLines: string[] = [];
+
+              if (modifiers.startingBank) {
+                modifierLines.push(
+                  `Start with +${formatDisplayNumber(modifiers.startingBank)} bank.`
+                );
+              }
+              if (modifiers.extraDraws) {
+                modifierLines.push(
+                  `+${modifiers.extraDraws} draw${modifiers.extraDraws === 1 ? '' : 's'} each round.`
+                );
+              }
+              if (modifiers.flatBonus) {
+                modifierLines.push(`+${modifiers.flatBonus} flat score per draw.`);
+              }
+              if (modifiers.interestBonus) {
+                modifierLines.push(
+                  `+${(modifiers.interestBonus * 100).toFixed(0)}% interest on banked points.`
+                );
+              }
+              if (modifierLines.length === 0) {
+                modifierLines.push('Standard odds. No modifiers.');
+              }
+
+              const badgeClasses = unlocked
+                ? theme === 'dark'
+                  ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200'
+                  : 'border-emerald-300 bg-emerald-50 text-emerald-700'
+                : theme === 'dark'
+                  ? 'border-slate-700 bg-slate-950 text-slate-400'
+                  : 'border-slate-200 bg-slate-100 text-slate-500';
+
+              const cardHighlightClasses = theme === 'dark'
+                ? 'bg-slate-950/70 hover:border-sky-400/60 hover:bg-slate-900/70'
+                : 'bg-white/90 hover:border-sky-300 hover:bg-sky-50';
+
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => {
+                    if (unlocked) {
+                      setPendingDeckId(preset.id);
+                    }
+                  }}
+                  disabled={!unlocked}
+                  className={cn(
+                    'flex h-full flex-col gap-3 rounded-2xl border px-5 py-6 text-left transition-all duration-200',
+                    palette.borderSubtle,
+                    cardHighlightClasses,
+                    isSelected &&
+                      (theme === 'dark'
+                        ? 'border-sky-400 bg-sky-500/15 shadow-[0_22px_55px_rgba(56,189,248,0.25)]'
+                        : 'border-sky-300 bg-sky-100 shadow-[0_20px_48px_rgba(59,130,246,0.18)]'),
+                    !unlocked && 'cursor-not-allowed opacity-60'
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className={cn('text-lg font-semibold', textPalette.primary)}>
+                      {preset.name}
+                    </span>
+                    <span
+                      className={cn(
+                        'rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide',
+                        badgeClasses
+                      )}
+                    >
+                      {unlocked ? 'Unlocked' : 'Locked'}
+                    </span>
+                  </div>
+                  <div className={cn('text-sm leading-relaxed', textPalette.secondary)}>
+                    {preset.description}
+                  </div>
+                  <ul className="space-y-1 text-sm">
+                    {modifierLines.map((line, index) => (
+                      <li key={index} className={cn(textPalette.secondary)}>
+                        {line}
+                      </li>
+                    ))}
+                  </ul>
+                  {!unlocked && preset.requirement && (
+                    <div className={cn('text-xs font-semibold uppercase tracking-wide', textPalette.dangerSoft)}>
+                      {preset.requirement.label}
+                    </div>
+                  )}
+                  {isSelected && unlocked && (
+                    <div className={cn('text-xs uppercase tracking-[0.3em]', textPalette.accent)}>
+                      Selected
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              onClick={handleDeckCancel}
+              className={cn(buttonBase, buttonPalette.muted, 'w-full sm:w-auto')}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleDeckConfirm}
+              disabled={!canStart}
+              className={cn(
+                buttonBase,
+                canStart ? buttonPalette.accent : disabledButtonClasses,
+                'w-full sm:w-auto'
+              )}
+            >
+              Start Run
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderShopTransitionOverlay = () => (
     <div className={cn('min-h-screen flex flex-col items-center justify-center gap-6 p-6', palette.shell)}>
       <div className={cn('mx-auto w-full max-w-xl rounded-3xl px-10 py-10 text-center space-y-6 transition-all duration-300', palette.surfaceMuted)}>
@@ -2038,7 +2785,7 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
               Draws Left
             </div>
             <div className={cn('text-lg font-semibold', textPalette.accent)}>
-              {drawsRemaining}/{BASE_DRAWS + getExtraDraws(ownedUpgrades)}
+              {drawsRemaining}/{BASE_DRAWS + deckModifiers.extraDraws + getExtraDraws(ownedUpgrades)}
             </div>
           </div>
         </div>
@@ -2370,6 +3117,7 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
       <>
         {renderMenu()}
         {renderSettingsModal()}
+        {renderDeckModal()}
       </>
     );
   }
@@ -2379,6 +3127,7 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
       <>
         {renderShopTransitionOverlay()}
         {renderSettingsModal()}
+        {renderDeckModal()}
       </>
     );
   }
@@ -2388,6 +3137,7 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
       <>
         {renderShop()}
         {renderSettingsModal()}
+        {renderDeckModal()}
       </>
     );
   }
@@ -2398,6 +3148,7 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
         {renderGameplay()}
         {renderGameOverOverlay()}
         {renderSettingsModal()}
+        {renderDeckModal()}
       </>
     );
   }
@@ -2406,6 +3157,7 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
     <>
       {renderGameplay()}
       {renderSettingsModal()}
+      {renderDeckModal()}
     </>
   );
 }
