@@ -98,10 +98,14 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
   const [gamePhase, setGamePhaseState] = useState<GamePhase>(initialPhase);
   const [profiles, setProfiles] = useState<PlayerProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
-  const setGamePhase = (phase: GamePhase) => {
+  const resumePhaseRef = useRef<GamePhase>('gameplay');
+  const setGamePhase = useCallback((phase: GamePhase) => {
     setGamePhaseState(phase);
+    if (phase !== 'menu') {
+      resumePhaseRef.current = phase;
+    }
     setIsSettingsOpen(false);
-  };
+  }, []);
   const [deck, setDeck] = useState<CardType[]>([]);
   const deckRef = useRef<CardType[]>([]);
   const [bank, setBank] = useState(0);
@@ -366,9 +370,11 @@ export default function GameApp({ initialPhase = 'menu' }: GameAppProps) {
   }, []);
 
   const handleContinueRun = useCallback(() => {
-    setGamePhase('gameplay');
+    const phaseToResume =
+      resumePhaseRef.current === 'menu' ? 'gameplay' : resumePhaseRef.current;
+    setGamePhase(phaseToResume);
     setReadyToPersist(true);
-  }, []);
+  }, [setGamePhase]);
 
   const palette = useMemo(() => getThemePalette(theme), [theme]);
 
@@ -562,6 +568,7 @@ const resetGameState = () => {
   setTargetAchieved(false);
   setLockedBetCategory(null);
   setRequireBetChangeAfterHit(false);
+  resumePhaseRef.current = 'gameplay';
   setActiveDeckId(deckPresets[0].id);
   setDeckModifiers(DEFAULT_DECK_MODIFIERS);
   setIsDeckModalOpen(false);
@@ -597,7 +604,8 @@ const resetGameState = () => {
             : 1;
         setRoundNumber(storedRoundNumber);
 
-        setRoundScore(typeof parsed.roundScore === 'number' ? parsed.roundScore : 0);
+        const storedRoundScore = typeof parsed.roundScore === 'number' ? parsed.roundScore : 0;
+        setRoundScore(storedRoundScore);
 
         const basePresetModifiers = getDeckPresetById(resolvedDeckId).modifiers;
         const storedDeckModifiers = mergeDeckModifiers(
@@ -622,32 +630,52 @@ const resetGameState = () => {
           BASE_DRAWS + storedDeckModifiers.extraDraws +
           getExtraDraws(hydratedOwnedUpgrades);
 
-        setDrawsRemaining(
-          typeof parsed.drawsRemaining === 'number' ? parsed.drawsRemaining : baseDrawAllowance
-        );
-        setRoundOutcome(parsed.roundOutcome ?? 'active');
-        const initialGamePhase = parsed.gamePhase ?? 'menu';
-        setGamePhase(initialGamePhase);
-        setSelectedBetId(parsed.selectedBetId ?? null);
-        const validCategories: BetCategory[] = ['Color', 'Suit', 'Rank Type', 'Value', 'Special'];
-        if (validCategories.includes(parsed.lockedBetCategory as BetCategory)) {
-          setLockedBetCategory(parsed.lockedBetCategory as BetCategory);
-        } else {
-          setLockedBetCategory(null);
-        }
-        setRequireBetChangeAfterHit(Boolean(parsed.requireBetChangeAfterHit));
+        const storedDrawsRemaining =
+          typeof parsed.drawsRemaining === 'number' ? parsed.drawsRemaining : baseDrawAllowance;
+        setDrawsRemaining(storedDrawsRemaining);
 
-        setRoundTarget(
+        const storedRoundTarget =
           typeof parsed.roundTarget === 'number'
             ? parsed.roundTarget
-            : calculateRoundTarget(storedRoundNumber, hydratedOwnedUpgrades)
-        );
+            : calculateRoundTarget(storedRoundNumber, hydratedOwnedUpgrades);
+        setRoundTarget(storedRoundTarget);
+
+        const storedRoundOutcome = parsed.roundOutcome ?? 'active';
+        const noDrawsLeft = storedDrawsRemaining <= 0;
+
+        let resolvedTargetAchieved = Boolean(parsed.targetAchieved);
+        if (!resolvedTargetAchieved && storedRoundScore >= storedRoundTarget) {
+          resolvedTargetAchieved = true;
+        }
+
+        let resolvedRoundOutcome: RoundOutcome = storedRoundOutcome;
+        if (noDrawsLeft && resolvedRoundOutcome === 'active' && !resolvedTargetAchieved) {
+          resolvedRoundOutcome = 'lost';
+        }
+
+        const validCategories: BetCategory[] = ['Color', 'Suit', 'Rank Type', 'Value', 'Special'];
+        const storedLockedCategory =
+          validCategories.includes(parsed.lockedBetCategory as BetCategory)
+            ? (parsed.lockedBetCategory as BetCategory)
+            : null;
+
+        setRoundOutcome(resolvedRoundOutcome);
+        setTargetAchieved(resolvedTargetAchieved);
+        setSelectedBetId(noDrawsLeft ? null : parsed.selectedBetId ?? null);
+        setLockedBetCategory(noDrawsLeft ? null : storedLockedCategory);
+        setRequireBetChangeAfterHit(noDrawsLeft ? false : Boolean(parsed.requireBetChangeAfterHit));
+
+        const initialGamePhase = parsed.gamePhase ?? 'menu';
+        let nextGamePhase = initialGamePhase;
+        if (noDrawsLeft && resolvedRoundOutcome === 'lost') {
+          nextGamePhase = 'gameOver';
+        }
+        setGamePhase(nextGamePhase);
 
         if (parsed.recentCards && Array.isArray(parsed.recentCards)) {
           setRecentCards(parsed.recentCards);
         }
 
-        setTargetAchieved(Boolean(parsed.targetAchieved));
         if (parsed.recentCards && parsed.recentCards.length > 0) {
           setLastDrawnCard(parsed.recentCards[0].card);
         }
@@ -691,7 +719,7 @@ const resetGameState = () => {
       hasLoadedRef.current = true;
       setReadyToPersist(true);
     }
-  }, [activeProfileId]);
+  }, [activeProfileId, setGamePhase]);
 
   useEffect(() => () => {
     if (shopTransitionTimeoutRef.current) {
@@ -714,7 +742,7 @@ const resetGameState = () => {
         shopTransitionTimeoutRef.current = null;
       }, 1100);
     }
-  }, [gamePhase]);
+  }, [gamePhase, setGamePhase]);
 
   useEffect(() => {
     if (!readyToPersist || typeof window === 'undefined' || !activeProfileId) return;
@@ -1116,6 +1144,7 @@ const resetGameState = () => {
     [
       clearFinalizeTimeout,
       gameOverTimeoutRef,
+      setGamePhase,
       shopTransitionTimeoutRef
     ]
   );
