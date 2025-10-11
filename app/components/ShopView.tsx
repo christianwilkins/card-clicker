@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react';
 
-import { cn } from '../../utils';
-import type { ShopUpgrade } from '../../types';
-import type { ThemePalette } from '../theme';
+import { cn } from '@/app/lib/utils';
+import type { ShopUpgrade } from '@/app/lib/types';
+import type { ThemePalette } from '@/app/lib/theme';
 
 interface ShopViewProps {
   palette: ThemePalette;

@@ -1,8 +1,8 @@
 import type { ChangeEvent, ReactNode } from 'react';
 
-import { cn } from '../../utils';
-import type { PlayerProfile, ThemeMode } from '../../types';
-import type { ThemePalette } from '../theme';
+import { cn } from '@/app/lib/utils';
+import type { PlayerProfile, ThemeMode } from '@/app/lib/types';
+import type { ThemePalette } from '@/app/lib/theme';
 
 interface MenuScreenProps {
   palette: ThemePalette;

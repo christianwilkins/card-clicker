@@ -1,4 +1,4 @@
-import type { Suit, Rank } from './types';
+import type { Suit, Rank } from '@/app/lib/types';
 
 interface CardProps {
   suit: Suit;

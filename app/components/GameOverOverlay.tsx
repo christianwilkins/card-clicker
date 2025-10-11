@@ -1,9 +1,9 @@
 import type { ReactNode } from 'react';
 
-import Card from '../../CardComponent';
-import { cn } from '../../utils';
-import type { CardType } from '../../types';
-import type { ThemePalette } from '../theme';
+import Card from './CardComponent';
+import { cn } from '@/app/lib/utils';
+import type { CardType } from '@/app/lib/types';
+import type { ThemePalette } from '@/app/lib/theme';
 
 interface GameOverOverlayProps {
   palette: ThemePalette;

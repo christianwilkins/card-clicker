@@ -1,4 +1,4 @@
-import type { Rarity, ThemeMode } from '../types';
+import type { Rarity, ThemeMode } from './types';
 
 interface TextPalette {
   primary: string;

@@ -1,8 +1,8 @@
 'use client';
 
-import type { ThemePalette } from './game/theme';
-import { BossModifier } from './types';
-import { cn } from './utils';
+import type { ThemePalette } from '@/app/lib/theme';
+import { BossModifier } from '@/app/lib/types';
+import { cn } from '@/app/lib/utils';
 
 interface BossRoundBannerProps {
   boss: BossModifier;

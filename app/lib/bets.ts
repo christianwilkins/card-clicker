@@ -1,4 +1,4 @@
-import type { BetOption } from '../types';
+import type { BetOption } from './types';
 
 import { getRankValue } from './cards';
 

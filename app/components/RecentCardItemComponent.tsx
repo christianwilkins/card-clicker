@@ -2,8 +2,8 @@
 
 import { memo } from 'react';
 import Card from './CardComponent';
-import { formatDisplayNumber, cn } from './utils';
-import type { CardType, RecentCardStatus } from './types';
+import { formatDisplayNumber, cn } from '@/app/lib/utils';
+import type { CardType, RecentCardStatus } from '@/app/lib/types';
 
 interface RecentCardItemProps {
   card: CardType;

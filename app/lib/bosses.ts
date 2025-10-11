@@ -1,4 +1,4 @@
-import type { BossModifier } from '../types';
+import type { BossModifier } from './types';
 
 export const bossModifiers: BossModifier[] = [
   {

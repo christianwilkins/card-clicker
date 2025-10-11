@@ -9,7 +9,7 @@ import { usePathname, useRouter } from 'next/navigation';
 
 import Card from './CardComponent';
 import RecentCardItem from './RecentCardItemComponent';
-import { cn, formatDisplayNumber, formatSignedDisplayNumber } from './utils';
+import { cn, formatDisplayNumber, formatSignedDisplayNumber } from '@/app/lib/utils';
 import type {
   BetCategory,
   BetOption,
@@ -28,7 +28,7 @@ import type {
   StoredGameState,
   ThemeMode,
   UpgradeEffect
-} from './types';
+} from '@/app/lib/types';
 
 import {
   ACTIVE_PROFILE_KEY,
@@ -40,16 +40,16 @@ import {
   PROFILES_KEY,
   THEME_STORAGE_KEY,
   getProfileStorageKey
-} from './game/constants';
-import { betOptionMap, betOptions } from './game/bets';
-import { getRankValue, normalizeStoredCard, shuffleDeck } from './game/cards';
+} from '@/app/lib/constants';
+import { betOptionMap, betOptions } from '@/app/lib/bets';
+import { getRankValue, normalizeStoredCard, shuffleDeck } from '@/app/lib/cards';
 import {
   buildDeckForPreset,
   deckPresets,
   getDeckPresetById,
   mergeDeckModifiers
-} from './game/decks';
-import { getBossForRound } from './game/bosses';
+} from '@/app/lib/decks';
+import { getBossForRound } from '@/app/lib/bosses';
 import {
   calculateRoundTarget,
   generateShopChoices,
@@ -59,14 +59,14 @@ import {
   getGlobalMultiplier,
   getInterestBonus,
   templateByName
-} from './game/upgrades';
-import { getDisabledButtonClasses, getRarityStyles, getThemePalette } from './game/theme';
-import { SettingsModal } from './game/components/SettingsModal';
-import { DeckSelectionModal } from './game/components/DeckSelectionModal';
-import { GameOverOverlay } from './game/components/GameOverOverlay';
-import { ShopTransitionOverlay } from './game/components/ShopTransitionOverlay';
-import { MenuScreen } from './game/components/MenuScreen';
-import { ShopView } from './game/components/ShopView';
+} from '@/app/lib/upgrades';
+import { getDisabledButtonClasses, getRarityStyles, getThemePalette } from '@/app/lib/theme';
+import { SettingsModal } from './SettingsModal';
+import { DeckSelectionModal } from './DeckSelectionModal';
+import { GameOverOverlay } from './GameOverOverlay';
+import { ShopTransitionOverlay } from './ShopTransitionOverlay';
+import { MenuScreen } from './MenuScreen';
+import { ShopView } from './ShopView';
 
 interface GameAppProps {
   initialPhase?: GamePhase;
@@ -1513,11 +1513,12 @@ const resetGameState = () => {
   };
 
   const resetToMenu = () => {
+    // Clear all timeouts
     clearFinalizeTimeout();
-    if (shopTransitionTimeoutRef.current) {
-      clearTimeout(shopTransitionTimeoutRef.current);
-      shopTransitionTimeoutRef.current = null;
-    }
+    if (shopTransitionTimeoutRef.current) clearTimeout(shopTransitionTimeoutRef.current);
+    if (gameOverTimeoutRef.current) clearTimeout(gameOverTimeoutRef.current);
+
+    // Just go to menu - the profile loading effect will handle restoring state
     setGamePhase('menu');
   };
 
@@ -1914,8 +1915,7 @@ const resetGameState = () => {
         )}
 
         <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
-          {Object.entries(betsByCategory).map(([categoryKey, options]) => {
-            const category = categoryKey as BetCategory;
+          {(Object.entries(betsByCategory) as [BetCategory, BetOption[]][]).map(([category, options]) => {
             const categoryLocked = requireBetChangeAfterHit && lockedBetCategory === category;
             return (
               <div key={category} className={cn('rounded-2xl p-5', palette.surfaceCard)}>

@@ -1,4 +1,4 @@
-import type { DeckModifier } from '../types';
+import type { DeckModifier } from './types';
 
 export const STORAGE_KEY = 'card-clicker-rogue-v1';
 export const THEME_STORAGE_KEY = 'card-clicker-theme';

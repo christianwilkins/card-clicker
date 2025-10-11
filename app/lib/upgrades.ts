@@ -1,4 +1,4 @@
-import type { OwnedUpgrade, Rarity, ShopUpgrade, UpgradeEffect } from '../types';
+import type { OwnedUpgrade, Rarity, ShopUpgrade, UpgradeEffect } from './types';
 
 import { getBossForRound } from './bosses';
 

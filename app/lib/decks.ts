@@ -1,4 +1,4 @@
-import type { CardType, DeckModifier, DeckPreset, Rank, Suit } from '../types';
+import type { CardType, DeckModifier, DeckPreset, Rank, Suit } from './types';
 
 import { createCard, createJokerCard, createStandardDeck, ranks, suits } from './cards';
 

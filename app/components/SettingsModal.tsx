@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 
-import { cn } from '../../utils';
-import type { ThemePalette } from '../theme';
+import { cn } from '@/app/lib/utils';
+import type { ThemePalette } from '@/app/lib/theme';
 
 interface SettingsModalProps {
   isOpen: boolean;
